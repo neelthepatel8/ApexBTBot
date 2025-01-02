@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "apexbtbot"
+version = "0.1.0"
+description = ""
+authors = ["Neel Patel <patel.neel5@northeastern.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+python-telegram-bot = "^21.9"
+web3 = "^7.6.1"
+requests = "^2.32.3"
+cryptography = "^44.0.0"
+python-dotenv = "^1.0.1"
+
+
+[tool.poetry.group.dev.dependencies]
+watchdog = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

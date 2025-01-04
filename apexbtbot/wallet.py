@@ -7,6 +7,9 @@ from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from dotenv import load_dotenv
 
+from apexbtbot.abi import erc20 as erc20abi
+from apexbtbot.tokens import erc20 as erc20_tokens
+
 load_dotenv()
 
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
@@ -37,6 +40,25 @@ class Wallet:
         except Exception as e:
             print(f"Error fetching EVM wallet balance: {e}")
             return 0.0
+        
+    @staticmethod
+    def get_erc20_balances(address):
+  
+        w3 = Web3(Web3.HTTPProvider(ETH_NODE_URL))
+        balances = {}
+
+        for symbol, token_address in erc20_tokens.items():
+            try:
+                token_contract = w3.eth.contract(
+                    address=w3.to_checksum_address(token_address),
+                    abi=erc20abi
+                )
+                balance = token_contract.functions.balanceOf(address).call()
+                decimals = token_contract.functions.decimals().call()
+                balances[symbol] = balance / (10 ** decimals)
+            except Exception as e:
+                print(f"Error fetching balance for token {symbol}: {e}")
+        return balances
 
     @staticmethod
     def create_solana_wallet():

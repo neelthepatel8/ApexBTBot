@@ -46,7 +46,7 @@ class Database:
             cursor.close()
 
     def init(self):
-        self.rm_all()
+        # self.rm_all()
         for query in tables:
             self.execute(query)
         

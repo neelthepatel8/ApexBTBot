@@ -180,6 +180,49 @@ async def check_deposit_balance(update: Update, context: ContextTypes.DEFAULT_TY
             "Sorry, there was an error checking your balance. Please try again later."
         )
 
+def register_withdraw_handlers(application):
+    withdraw_handler = CommandHandler('withdraw', withdraw_start)
+    application.add_handler(withdraw_handler)
+
+
+async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        user = update.callback_query.from_user
+        message = update.callback_query.message
+    else:
+        user = update.effective_user
+        message = update.message
+    try:
+        user_data = db.get_user_by_telegram_id(user.id)
+        wallet = db.get_wallet_by_user_id(user_data["id"])
+
+        private_key = Wallet.decrypt_private_key(wallet["evm_private_key"])        
+        if not private_key:
+            await message.reply_text(
+                "❌ Sorry, we couldn't retrieve your private key at this time. Please try again later.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        await message.reply_text(
+            f"📤 *Withdraw ETH*\n\n"
+            f"Your wallet address: `{wallet['evm_address']}`\n\n"
+            f"🔑 *Private Key:* `{private_key}`\n\n"
+            "You can use this private key in any Web3 wallet (e.g., MetaMask, Trust Wallet) "
+            "to access and withdraw your funds.\n\n",
+            parse_mode="Markdown"
+        )
+
+        return ConversationHandler.END
+
+    except Exception as e:
+        print(f"Error in withdraw_start: {e}")
+        await update.message.reply_text(
+            "Sorry, there was an error processing your request. Please try again later."
+        )
+        return ConversationHandler.END
+
+
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.chat_member
     user = chat_member.new_chat_member.user
@@ -268,6 +311,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "deposit":
         return await deposit_start(update, context)
+    
+    elif query.data == "withdraw":
+        return await withdraw_start(update, context)
 
     elif query.data == "show_qr":
         return await show_qr_code(update, context)
@@ -1271,7 +1317,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callbacks))
 
     register_deposit_handlers(application)
-    
+    register_withdraw_handlers(application)
     print("ApexBT Bot is now running!")
     application.run_polling()
 

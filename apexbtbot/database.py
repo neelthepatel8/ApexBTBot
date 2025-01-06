@@ -93,3 +93,20 @@ class Database:
     def get_transactions_by_user_id(self, user_id):
         query = "SELECT * FROM transactions WHERE user_id = %s ORDER BY created_at DESC;"
         return self.execute(query, (user_id,), fetch_all=True)
+
+    def get_all_active_users(self):
+        query = """
+        SELECT users.* 
+        FROM users 
+        INNER JOIN wallets ON users.id = wallets.user_id 
+        WHERE wallets.evm_address IS NOT NULL;
+        """
+        return self.execute(query, fetch_all=True)
+    
+    def get_wallet_address_by_user_id(self, user_id):
+        query = """
+        SELECT evm_address 
+        FROM wallets 
+        WHERE user_id = %s;
+        """
+        return self.execute(query, (user_id,), fetch_one=True)["evm_address"]

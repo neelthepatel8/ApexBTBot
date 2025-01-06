@@ -1,5 +1,8 @@
 import os
 import base64
+import requests
+import json 
+
 from cryptography.fernet import Fernet
 from web3 import Web3
 from solders.keypair import Keypair
@@ -12,14 +15,18 @@ from decimal import Decimal
 from apexbtbot.abi import erc20 as erc20abi
 from apexbtbot.tokens import erc20 as erc20_tokens
 from apexbtbot import web3utils
+from apexbtbot.alchemy import AlchemyAPIWrapper
 
 load_dotenv()
 
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 ETH_NODE_URL = os.getenv("ETH_NODE_URL")
+PRICES_NODE_URL = os.getenv("PRICES_NODE_URL")
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
 cipher = Fernet(ENCRYPTION_KEY)
+
+alchemy = AlchemyAPIWrapper(ETH_NODE_URL)
 
 class Wallet:
     @staticmethod
@@ -44,29 +51,6 @@ class Wallet:
             print(f"Error fetching EVM wallet balance: {e}")
             return 0.0
         
-    @staticmethod
-    def get_erc20_balances(address, with_address=False):
-  
-        w3 = Web3(Web3.HTTPProvider(ETH_NODE_URL))
-        balances = {}
-
-        token_addresses = {}
-        for symbol, token_address in erc20_tokens.items():
-            try:
-                token_contract = w3.eth.contract(
-                    address=w3.to_checksum_address(token_address),
-                    abi=erc20abi
-                )
-                balance = token_contract.functions.balanceOf(address).call()
-                decimals = token_contract.functions.decimals().call()
-                balances[symbol] = balance / (10 ** decimals)
-                token_addresses[symbol] = token_address
-            except Exception as e:
-                print(f"Error fetching balance for token {symbol}: {e}")
-        
-        if with_address:
-            return balances, token_addresses
-        return balances
 
     @staticmethod
     def create_solana_wallet():
@@ -105,50 +89,154 @@ class Wallet:
         except ValueError:
             return False
         
+
     @staticmethod
-    async def build_balance_string(wallet, w3):
-        evm_address = wallet.get("evm_address")
-        balances = {}
+    def is_spam_token(metadata):
+        if not metadata:
+            return True
+            
+        name = metadata.get('name', '').lower()
+        symbol = metadata.get('symbol', '').lower()
+        
+        spam_indicators = [
+            'claim', 'airdrop', 'visit', 'free', 'click',
+            '.com', '.xyz', '.net', '.org', 'reward',
+            'getgbg', 'http', 'https', 'www.', 'telegram',
+            't.me/', 'twitter'
+        ]
+        
+        for indicator in spam_indicators:
+            if indicator in name or indicator in symbol:
+                return True
+                
+        if len(name) > 30 or len(symbol) > 10:
+            return True
+            
+        return False
+
+    @staticmethod
+    def process_token_metadata(alchemy, token, token_info_dict):
         try:
-            eth_price_usd = web3utils.fetch_eth_to_usd()
-            eth_balance = Wallet.get_evm_balance(evm_address)
-            eth_usd_value = eth_balance * eth_price_usd
-            balances["ETH"] = f"{eth_balance:.4f} ETH (${eth_usd_value:.2f})"
+            contract_address = token["contractAddress"]
+            raw_balance = int(token["tokenBalance"], 16)
+            if raw_balance <= 0:
+                return None
+                
+            metadata_response = alchemy.get_token_metadata(contract_address)
+            if not metadata_response or 'result' not in metadata_response:
+                return None
+                
+            metadata = metadata_response['result']
+            if Wallet.is_spam_token(metadata):
+                return None
+                
+            decimals = metadata.get('decimals', 18)
+            balance = raw_balance / (10 ** decimals)
+            
+            token_info = {
+                'balance': balance,
+                'symbol': metadata.get('symbol', ''),
+                'name': metadata.get('name', ''),
+                'decimals': decimals,
+                'price_in_usd': 0,
+                'value_in_usd': 0
+            }
+            
+            return {
+                'address': contract_address,
+                'info': token_info,
+                'network_info': {
+                    "network": "base-mainnet",
+                    "address": contract_address
+                }
+            }
+            
         except Exception as e:
-            print(f"Error fetching ETH balance for {evm_address}: {e}")
-            balances["ETH"] = "Error fetching balance"
+            print(f"Error processing token metadata: {e}")
+            return None
 
+    @staticmethod
+    def fetch_token_prices(alchemy, tokens_to_price, token_info_dict):
         try:
-            erc20_balances, token_addresses = Wallet.get_erc20_balances(evm_address, with_address=True)
-            for symbol, balance in erc20_balances.items():
-                if balance > 0.0:
-                    try:
-                        token_address = token_addresses[symbol]
-                        # Special handling for USDC
-                        if token_address.lower() == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower():
-                            # USDC is already in USD terms
-                            token_usd_value = balance
-                            balances[symbol] = f"{balance:.4f} (${token_usd_value:.3f})"
-                        else:
-                            # For other tokens, get their ETH price and convert to USD
-                            _, _, _, token_price_eth = await web3utils.get_token_info(token_address, w3)
-                            token_usd_value = Decimal(balance) * Decimal(token_price_eth) * Decimal(eth_price_usd)
-                            balances[symbol] = f"{balance:.4f} (${token_usd_value:.3f})"
-                    except Exception as price_error:
-                        print(f"Error fetching price for {symbol}: {price_error}")
-                        balances[symbol] = f"{balance:.4f}".replace(".", "\\.")
+            if not tokens_to_price:
+                return token_info_dict
+                
+            prices_payload = {"addresses": tokens_to_price}
+            prices_response = alchemy._make_request_with_retry(prices_payload, prices=True, endpoint="tokens/by-address")
+            
+            if prices_response and 'data' in prices_response:
+                for token_data in prices_response['data']:
+                    address = token_data.get('address')
+                    if address in token_info_dict:
+                        try:
+                            price = float(token_data.get('prices', [])[0].get('value', 0.0))
+                            token_info_dict[address]['price_in_usd'] = price
+                            token_info_dict[address]['value_in_usd'] = price * token_info_dict[address]['balance']
+                        except (IndexError, ValueError) as e:
+                            print(f"Error processing price for {address}: {e}")
+                            
+            return token_info_dict
+            
         except Exception as e:
-            print(f"Error fetching ERC-20 token balances: {e}")
+            print(f"Error fetching batch prices: {e}")
+            return token_info_dict
 
-        total_usd_value = eth_usd_value
-        for symbol, balance_str in balances.items():
-            if symbol != "ETH" and "($" in balance_str:
-                usd_value = float(balance_str.split("($")[1].split(")")[0].replace("$", ""))
-                total_usd_value += usd_value
+    @staticmethod
+    def get_erc20_balances(wallet_address, with_address=False):
+        alchemy = AlchemyAPIWrapper(ETH_NODE_URL)
+        
+        response = alchemy.get_token_balances(wallet_address)
+        if not response:
+            return {}
+            
+        token_balances = response.get("result", {}).get("tokenBalances", [])
+        token_info_dict = {}
+        tokens_to_price = []
+        
+        for token in token_balances:
+            token_data = Wallet.process_token_metadata(alchemy, token, token_info_dict)
+            if token_data:
+                token_info_dict[token_data['address']] = token_data['info']
+                tokens_to_price.append(token_data['network_info'])
+        
+        token_info_dict = Wallet.fetch_token_prices(alchemy, tokens_to_price, token_info_dict)
+        
+        if with_address:
+            return token_info_dict, list(token_info_dict.keys())
+        return token_info_dict
+    
+    
+    @staticmethod
+    def build_balance_string(wallet_address, no_title=False, no_eth=False):
+        
+        token_balances = Wallet.get_erc20_balances(wallet_address)
+        eth_balance = Wallet.get_evm_balance(wallet_address)
+        eth_value_in_usd = alchemy.get_eth_price() * eth_balance
 
-        balance_message = f"Total Portfolio Value: <code>${f'{total_usd_value:.2f}'}</code>\n\n"
-        balance_message += "Your Positions:\n"
-        for symbol, balance in balances.items():
-            balance_message += f"{symbol}: <code>{balance}</code>\n"
+        balance_compiled_message = f"ETH: <code>{eth_balance:.4f} (${eth_value_in_usd:.2f})</code>\n"
+        total_usd_value = eth_value_in_usd
 
+        for _, data in token_balances.items():
+            balance = data["balance"]
+            symbol = data["symbol"]
+            value_in_usd = data["value_in_usd"]
+
+            total_usd_value += value_in_usd
+
+            if no_eth and symbol == "ETH":
+                continue
+            
+            if balance > 0.0:
+                balance_compiled_message += f"{symbol}: <code>{balance:.4f} (${value_in_usd:.2f})</code>\n"
+                    
+        balance_message = ""
+
+        if not no_title:
+            balance_message = f"Total Portfolio Value: <code>${total_usd_value:.2f}</code>\n\n"
+            balance_message += "Your Positions:\n"
+
+        balance_message += balance_compiled_message
         return balance_message
+    
+        
+    

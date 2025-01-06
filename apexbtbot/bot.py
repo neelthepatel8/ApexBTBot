@@ -2,7 +2,8 @@ from telegram import (
     Update, 
     InlineKeyboardMarkup, 
     InlineKeyboardButton,
-    error
+    error,
+    Message
 )
 
 from telegram.ext import (
@@ -14,7 +15,6 @@ from telegram.ext import (
     ConversationHandler, 
     MessageHandler, 
     filters,
-    JobQueue
 )
 from dotenv import load_dotenv
 from web3 import Web3, exceptions
@@ -311,15 +311,14 @@ async def get_user_token_balance(token_address: str, user_id: int, w3: Web3) -> 
 
 async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
-        message = update.callback_query.message
         user = update.callback_query.from_user
+        await update.callback_query.answer()
     else:
-        message = update.message
         user = update.effective_user
 
     user_data = db.get_user_by_telegram_id(user.id)
     if not user_data:
-        await message.reply_text(
+        await update.effective_message.reply_text(
             "You are not registered. Use /start to register."
         )
         return
@@ -327,53 +326,23 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wallet = db.get_wallet_by_user_id(user_data["id"])
     wallet_address = db.get_wallet_address_by_user_id(user_data["id"])
     if not wallet:
-        await message.reply_text(
+        await update.effective_message.reply_text(
             "You don't have a wallet. Use /start to create one."
         )
         return
 
-    if update.callback_query:
-        await update.callback_query.answer()
-
-        try:
-            await message.edit_text(
-                text=f"Fetching the latest balance...\n<i>Last fetched at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            print(f"Error during loading message: {e}")
-            return
-
     try:
         balance_message = Wallet.build_balance_string(wallet_address)
-
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         balance_message += f"\n\n<i>Last fetched at: {timestamp}</i>"
 
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh", callback_data="check_balance")]
-        ]
-
-        if update.callback_query:
-            await message.edit_text(
-                text=balance_message,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=balance_message,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=balance_message,
+            parse_mode="HTML"
+        )
     except Exception as e:
-        print(f"Error updating balance: {e}")
-        if not update.callback_query:
-            await message.reply_text(
-                "Could not fetch your balance. Please try again later."
-            )
+        print(f"Error fetching balance: {e}")
 
 async def prompt_for_token(update: Update, operation: str):
     message = f"Enter a token address to {operation}"
@@ -417,11 +386,57 @@ async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return BUY_TOKEN_ADDRESS
 
     name, symbol, decimals, price_in_eth = await web3utils.get_token_info(token_address, w3)
+    
+    # Check liquidity and get pool info
+    try:
+        _, fee_tier = await web3utils.get_pair_address(token_address, w3)
+        
+        # Try to quote a small test amount (0.1 ETH) to check liquidity
+        quoter = w3.eth.contract(
+            address=Web3.to_checksum_address("0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"),
+            abi=abi.uniswap_quote
+        )
+        
+        test_amount = Web3.to_wei(0.1, 'ether')
+        quote_params = (
+            Web3.to_checksum_address("0x4200000000000000000000000000000000000006"),  # WETH
+            Web3.to_checksum_address(token_address),
+            test_amount,
+            fee_tier,
+            0
+        )
+        
+        result = quoter.functions.quoteExactInputSingle(quote_params).call()
+        liquidity_warning = ""
+        
+        try:
+            test_quote = quoter.functions.quoteExactInputSingle((
+                Web3.to_checksum_address("0x4200000000000000000000000000000000000006"),
+                Web3.to_checksum_address(token_address),
+                Web3.to_wei(1, 'ether'),
+                fee_tier,
+                0
+            )).call()
+            
+            if not test_quote or abs(test_quote[0] / Web3.to_wei(1, 'ether') - result[0] / test_amount) > 0.05:
+                liquidity_warning = "\n⚠️ *Warning: Low liquidity detected. Trade carefully!*"
+        except Exception:
+            liquidity_warning = "\n⚠️ *Warning: Very low liquidity. Large trades may fail!*"
+            
+    except Exception as e:
+        if "SPL" in str(e):
+            await update.message.reply_text(
+                f"⚠️ This token has extremely low liquidity and may be difficult to trade.\n"
+                f"Consider checking the pool on Basescan first:\n"
+                f"[View Pool ↗](https://basescan.org/token/{token_address})",
+                parse_mode="Markdown"
+            )
+            return BUY_TOKEN_ADDRESS
+        liquidity_warning = "\n⚠️ *Warning: Could not verify liquidity. Trade with caution!*"
 
     context.user_data["buy_token_address"] = token_address
     context.user_data["buy_token_symbol"] = symbol
     context.user_data["buy_token_decimals"] = decimals
-
 
     user_data = db.get_user_by_telegram_id(update.effective_user.id)
     wallet = db.get_wallet_by_user_id(user_data["id"])
@@ -449,7 +464,8 @@ async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"`{token_address}`\n"
         f"[Basescan ↗](https://basescan.org/token/{token_address})"
         f"\n\nYour balance: {eth_balance:.4f} ETH\n"
-        f"Price: ${price_in_usd:.8f} per token ({price_in_eth:.9f} ETH)\n\n",
+        f"Price: ${price_in_usd:.8f} per token ({price_in_eth:.9f} ETH)"
+        f"{liquidity_warning}\n\n",
         parse_mode="Markdown",
         reply_markup=reply_markup
     )

@@ -37,7 +37,6 @@ db.init()
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ETH_NODE_URL = os.getenv("ETH_NODE_URL")
-# UNISWAP_ROUTER_ADDRESS = "0xfff9976782d46cc05630d1f6ebab18b2324d6b14"  # testnet
 
 BUY_TOKEN_ADDRESS, BUY_AMOUNT_CHOICE, BUY_AMOUNT, BUY_CONFIRM = range(4)
 SELL_TOKEN_ADDRESS, SELL_DESTINATION_TOKEN, SELL_AMOUNT, SELL_CONFIRM = range(4)
@@ -50,7 +49,7 @@ alchemy = AlchemyAPIWrapper(ETH_NODE_URL)
 
 w3 = Web3(Web3.HTTPProvider(ETH_NODE_URL))
 
-UNISWAP_ROUTER_ADDRESS = "0x2626664c2603336E57B271c5C0b26F421741e481" # mainnet
+UNISWAP_ROUTER_ADDRESS = "0x2626664c2603336E57B271c5C0b26F421741e481"
 
 uniswap_router = w3.eth.contract(
     address=w3.to_checksum_address(UNISWAP_ROUTER_ADDRESS), abi=abi.uniswap_router
@@ -362,7 +361,6 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
-            # Otherwise, send a new message
             await context.bot.send_message(
                 chat_id=user.id,
                 text=balance_message,
@@ -599,7 +597,6 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         amount_in_wei = Web3.to_wei(amount_in_eth, "ether")
         
-        # Get quote first
         quoter = w3.eth.contract(
             address=w3.to_checksum_address("0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"),
             abi=abi.uniswap_quote
@@ -618,7 +615,6 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         min_tokens_out = int(amount_out * (1 - slippage / 100))
 
 
-        # Get the latest nonce
         nonce = w3.eth.get_transaction_count(sender_address, 'latest')
         
         router = w3.eth.contract(
@@ -626,7 +622,6 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             abi=abi.uniswap_router
         )
 
-        # Create input parameters struct
         params = {
             'tokenIn': weth_address,
             'tokenOut': token_address,
@@ -638,7 +633,6 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'sqrtPriceLimitX96': 0
         }
 
-        # Create transaction
         transaction = router.functions.exactInputSingle(params).build_transaction({
             "from": sender_address,
             "value": amount_in_wei,
@@ -693,18 +687,15 @@ async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_
         user = update.effective_user
     
     try:
-        # Display loading indicator
         loading_message = await message.reply_text(
             "Fetching your token balances, please wait... ⏳",
             parse_mode="HTML"
         )
 
-        # Fetch user data and token balances
         user_data = db.get_user_by_telegram_id(user.id)
         wallet_address = db.get_wallet_address_by_user_id(user_data["id"])
         token_balances = Wallet.get_erc20_balances(wallet_address)
 
-        # Prepare data for user selection
         context.user_data['token_data'] = {}
         message_parts = ["Select a token to sell:\n"]
         keyboard = []
@@ -735,15 +726,13 @@ async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_
         message_parts.append(balance_string)
         keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
 
-        # Check if there are no tokens to sell
-        if len(keyboard) == 1:  # Only the "Cancel" button
+        if len(keyboard) == 1: 
             await loading_message.edit_text(
                 "You don't have any tokens to sell.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
 
-        # Display the fetched balances and options
         reply_markup = InlineKeyboardMarkup(keyboard)
         await loading_message.edit_text(
             "\n".join(message_parts),
@@ -811,7 +800,6 @@ async def handle_sell_amount_selection(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     
-    # Parse amount selection
     amount_type = query.data.split("_")[1]
     balance = context.user_data["sell_token_balance"]
     
@@ -821,8 +809,7 @@ async def handle_sell_amount_selection(update: Update, context: ContextTypes.DEF
         )
         return SELL_AMOUNT
     
-    # Calculate amount based on percentage
-    percentage = int(amount_type)  # amt_25 -> 25
+    percentage = int(amount_type)  
     sell_amount = (percentage / 100) * balance
     context.user_data["sell_amount"] = sell_amount
     
@@ -884,7 +871,6 @@ async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return SELL_AMOUNT
         
-        # Check if amount is valid
         if amount <= 0:
             await update.message.reply_text("Amount must be greater than 0")
             return SELL_AMOUNT
@@ -895,21 +881,18 @@ async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return SELL_AMOUNT
         
-        # Store amount in context
         context.user_data["sell_amount"] = amount
         
-        # Get price info for confirmation
         eth_price_usd = web3utils.fetch_eth_to_usd()
         name, symbol, decimals, price_in_eth = await web3utils.get_token_info(address, w3)
         
-        if address.lower() == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower():  # USDC
+        if address.lower() == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower(): 
             token_price_usd = 1.0
             value_usd = amount
         else:
             token_price_usd = float(price_in_eth) * eth_price_usd
             value_usd = amount * token_price_usd
             
-        # Create confirmation message
         message = (
             f"*Confirm Sell Order*\n\n"
             f"Token: {symbol}\n"
@@ -945,7 +928,6 @@ async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SELL_AMOUNT
 
 async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the confirmation of a token sell order"""
     query = update.callback_query
     await query.answer()
     
@@ -954,7 +936,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     try:
-        # 1. Get user wallet and transaction details
         user = query.from_user
         user_data = db.get_user_by_telegram_id(user.id)
         wallet = db.get_wallet_by_user_id(user_data["id"])
@@ -968,7 +949,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sender_address = wallet["evm_address"]
         evm_private_key = Wallet.decrypt_private_key(wallet["evm_private_key"])
         
-        # 2. Set up contracts and addresses
         router_address = Web3.to_checksum_address("0x2626664c2603336E57B271c5C0b26F421741e481")
         weth_address = Web3.to_checksum_address("0x4200000000000000000000000000000000000006")
         
@@ -977,11 +957,9 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             abi=abi.erc20
         )
         
-        # 3. Calculate amount in wei
         decimals = token_contract.functions.decimals().call()
         amount_in_wei = int(amount_to_sell * (10 ** decimals))
         
-        # 4. Check and handle token approval
         status_message = await query.message.reply_text("Checking token approval...")
         
         current_allowance = token_contract.functions.allowance(
@@ -992,7 +970,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_allowance < amount_in_wei:
             await status_message.edit_text("Approving token spend...")
             
-            # Get current gas price
             gas_price = w3.eth.gas_price
             max_uint = 2**256 - 1
             
@@ -1001,9 +978,9 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 max_uint
             ).build_transaction({
                 "from": sender_address,
-                "chainId": 8453,  # Base mainnet
+                "chainId": 8453, 
                 "gas": 100000,
-                "gasPrice": int(gas_price * 1.5),  # 50% more than current gas price
+                "gasPrice": int(gas_price * 1.5), 
                 "nonce": w3.eth.get_transaction_count(sender_address),
             })
             
@@ -1016,7 +993,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             
-            # Wait for approval confirmation
             try:
                 receipt = w3.eth.wait_for_transaction_receipt(approval_hash, timeout=60)
                 if receipt.status != 1:
@@ -1030,15 +1006,12 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return ConversationHandler.END
         
-        # 5. Verify balances and allowance after approval
         await status_message.edit_text("Verifying balances...")
         
-        # Check token balance and adjust amount if needed
         token_balance = token_contract.functions.balanceOf(sender_address).call()
         eth_balance = w3.eth.get_balance(sender_address)
         new_allowance = token_contract.functions.allowance(sender_address, router_address).call()
         
-        # If trying to sell very close to max balance, use the actual balance
         if amount_in_wei > token_balance and (amount_in_wei - token_balance) < 1000:
             amount_in_wei = token_balance
             amount_to_sell = amount_in_wei / (10 ** decimals)
@@ -1047,7 +1020,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_message.edit_text("❌ Insufficient token balance for the trade.")
             return ConversationHandler.END
             
-        # 6. Get swap quote
         await status_message.edit_text("Getting price quote...")
         
         _, fee_tier = await web3utils.get_pair_address(token_address, w3)
@@ -1076,7 +1048,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_message.edit_text("Failed to get price quote. This could mean insufficient liquidity.")
             return ConversationHandler.END
         
-        # 6. Execute swap
         router = w3.eth.contract(
             address=router_address,
             abi=abi.uniswap_router
@@ -1093,7 +1064,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'sqrtPriceLimitX96': 0
         }
         
-        # Estimate gas with buffer
         try:
             print(f"Estimating gas with params: {swap_params}")
             gas_estimate = router.functions.exactInputSingle(swap_params).estimate_gas({
@@ -1106,16 +1076,13 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         gas_limit = int(gas_estimate * 1.5)
         
-        # Get fresh gas price
         gas_price = w3.eth.gas_price
         
-        # Get fresh gas price and estimate total gas cost
         gas_price = w3.eth.gas_price
-        actual_gas_price = int(gas_price * 1.5)  # 50% buffer
+        actual_gas_price = int(gas_price * 1.5)
         estimated_gas_cost_wei = actual_gas_price * gas_limit
         estimated_gas_cost_eth = w3.from_wei(estimated_gas_cost_wei, 'ether')
         
-        # Calculate minimum ETH received
         min_out_eth = w3.from_wei(min_out, 'ether')
         amount_out_eth = w3.from_wei(amount_out, 'ether')
         
@@ -1127,7 +1094,6 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "nonce": w3.eth.get_transaction_count(sender_address),
         })
         
-        # Send detailed confirmation message
         confirm_message = (
             "🔄 *Transaction Details*\n\n"
             f"*Selling:* {amount_to_sell:.4f} {context.user_data['sell_token_symbol']}\n"

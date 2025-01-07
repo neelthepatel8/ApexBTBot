@@ -566,32 +566,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
         return ConversationHandler.END
 
-async def get_user_token_balance(
-    token_address: str, user_id: int, w3: Web3
-) -> tuple[float, int]:
-    try:
-        user_data = db.get_user_by_telegram_id(user_id)
-        wallet = db.get_wallet_by_user_id(user_data["id"])
-        if not wallet:
-            return None, None
-
-        evm_address = wallet["evm_address"]
-
-        token_contract = w3.eth.contract(
-            address=w3.to_checksum_address(token_address), abi=abi.erc20
-        )
-
-        decimals = token_contract.functions.decimals().call()
-        balance_wei = token_contract.functions.balanceOf(evm_address).call()
-        balance_decimal = balance_wei / (10**decimals)
-
-        return balance_decimal, decimals
-
-    except Exception as e:
-        print(f"Error fetching token balance: {e}")
-        return None, None
-
-
 async def prompt_for_token(update: Update, operation: str):
     message = f"Enter a token address to {operation}"
     if update.callback_query:

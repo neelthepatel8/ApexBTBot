@@ -163,7 +163,7 @@ async def check_deposit_balance(update: Update, context: ContextTypes.DEFAULT_TY
         user_data = db.get_user_by_telegram_id(user.id)
         wallet_address = db.get_wallet_address_by_user_id(user_data["id"])
         
-        balance_message = Wallet.build_balance_string(wallet_address)
+        balance_message = Wallet.build_evm_balance_string(wallet_address)
         
         keyboard = [[InlineKeyboardButton("🔄 Refresh Balance", callback_data="check_balance")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -257,7 +257,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if wallet:
         try:
-            balance_string = Wallet.build_balance_string(wallet['evm_address'])
+            balance_string = Wallet.build_evm_balance_string(wallet['evm_address'])
             await update.message.reply_text(
                 f"<b>Welcome back to ApexBT Bot, {user.full_name}!</b>\n\n"
                 f"<u>Your Wallet Details:</u>\n"
@@ -303,7 +303,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await update.message.reply_text(
-                "❌ There was an error creating your wallets. Please try again later or contact support.",
+                "I cannot send you private messages, please initiate a conversation with me.",
                 parse_mode="HTML"
             )
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,7 +406,7 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        balance_message = Wallet.build_balance_string(wallet_address)
+        balance_message = Wallet.build_evm_balance_string(wallet_address)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         balance_message += f"\n\n<i>Last fetched at: {timestamp}</i>"
 
@@ -812,7 +812,7 @@ async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_
                     callback_data=f"sell_{token_id}"
                 )])
 
-        balance_string = Wallet.build_balance_string(wallet_address, no_title=True, no_eth=True)
+        balance_string = Wallet.build_evm_balance_string(wallet_address, no_title=True, no_eth=True)
         message_parts.append(balance_string)
         keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
 

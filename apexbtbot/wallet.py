@@ -180,7 +180,7 @@ class Wallet:
             return token_info_dict
 
     @staticmethod
-    def get_erc20_balances(wallet_address, with_address=False):
+    def get_evm_token_balances(wallet_address, with_address=False):
         alchemy = AlchemyAPIWrapper(ETH_NODE_URL)
         
         response = alchemy.get_token_balances(wallet_address)
@@ -204,9 +204,9 @@ class Wallet:
         return token_info_dict
     
     @staticmethod
-    def build_balance_string(wallet_address, no_title=False, no_eth=False):
+    def build_evm_balance_string(wallet_address, no_title=False, no_eth=False):
         
-        token_balances = Wallet.get_erc20_balances(wallet_address)
+        token_balances = Wallet.get_evm_token_balances(wallet_address)
         eth_balance = Wallet.get_evm_balance(wallet_address)
         eth_value_in_usd = alchemy.get_eth_price() * eth_balance
 

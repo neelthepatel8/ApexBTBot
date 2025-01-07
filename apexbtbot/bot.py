@@ -187,6 +187,10 @@ async def start_sell_chain_selection(
     context.user_data["command_type"] = "sell"
     return await prompt_chain(update, context)
 
+async def start_deposit_chain_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["command_type"] = "deposit"
+    return await prompt_chain(update, context)
+
 async def handle_chain_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -254,59 +258,73 @@ async def handle_chain_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 def register_deposit_handlers(application):
-    deposit_handler = CommandHandler("deposit", deposit_start)
-    qr_handler = CallbackQueryHandler(show_qr_code, pattern="^show_qr$")
-    check_balance_handler = CallbackQueryHandler(
-        check_deposit_balance, pattern="^check_balance$"
+    deposit_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(handle_callbacks, pattern="^deposit$"),
+            CommandHandler("deposit", start_deposit_chain_selection),
+        ],
+        states={
+            CHAIN_SELECTION: [
+                CallbackQueryHandler(
+                    handle_chain_deposit, pattern="^(base_chain|solana_chain)$"
+                )
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
-
     application.add_handler(deposit_handler)
-    application.add_handler(qr_handler)
-    application.add_handler(check_balance_handler)
 
-async def deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user = update.effective_user
-        user_data = db.get_user_by_telegram_id(user.id)
-        wallet = db.get_wallet_by_user_id(user_data["id"])
+async def handle_chain_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    selected_chain = query.data
+    user = query.from_user
+    user_data = db.get_user_by_telegram_id(user.id)
+    wallet = db.get_wallet_by_user_id(user_data["id"])
 
-        keyboard = [
-            [
-                InlineKeyboardButton("Show QR Code", callback_data="show_qr"),
-                InlineKeyboardButton("Check Balance", callback_data="check_balance"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        message = (
-            "📥 *Deposit Funds*\n\n"
-            "To deposit funds, send ETH or tokens to your wallet address:\n"
-            f"`{wallet['evm_address']}`\n\n"
-            "*Supported Networks:*\n"
-            "• Base Network (Chain ID: 8453)\n\n"
-            "*Supported Tokens:*\n"
-            "• ETH (Native token)\n"
-            "• USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)\n"
-            "• Other ERC20 tokens\n\n"
-            "⚠️ *Important:*\n"
-            "• Only send tokens on the Base network\n"
-            "• Minimum deposit: 0.01 ETH or equivalent\n"
-            "• Deposits usually confirm within 1-2 minutes\n\n"
-            "Click 'Check Balance' after sending to verify your deposit."
-        )
-
-        await update.callback_query.message.reply_text(
-            message, parse_mode="Markdown", reply_markup=reply_markup
-        )
-
-        return SHOWING_ADDRESS
-
-    except Exception as e:
-        print(f"Error in deposit_start: {e}")
-        await update.callback_query.message.reply_text(
-            "Sorry, there was an error processing your deposit request. Please try again later."
-        )
+    if not wallet:
+        await no_wallet(update, context)
         return ConversationHandler.END
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Show QR Code", callback_data="show_qr"),
+            InlineKeyboardButton("Check Balance", callback_data="check_balance"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+
+    token_name, wallet_address, network_name, chain_id = range(4)
+
+    if selected_chain == 'base_chain':
+        token_name = "ETH" 
+        wallet_address = wallet['evm_address']
+        network_name = "Base"
+        chain_id = 8453
+    else: 
+        token_name = "SOL"
+        wallet_address = wallet['solana_address']
+        network_name = "Solana"
+        chain_id = 101
+
+    context.user_data["wallet_address"] = wallet_address
+
+    message = (
+        "📥 *Deposit Funds*\n\n"
+        f"To deposit funds, send {token_name} to:\n`{wallet_address}`\n\n"
+        f"*Supported Networks:*\n• {network_name} Network (Chain ID: {chain_id})\n\n"
+        "⚠️ *Important:*\n"
+        f"• Only send tokens on {network_name} network\n"
+        f"• Minimum deposit: 0.01 {token_name} or equivalent\n"
+        "• Deposits confirm in 1-2 minutes\n\n"
+        "Click 'Check Balance' after sending to verify your deposit."
+    )
+        
+    await query.message.edit_text(
+        message, parse_mode="Markdown", reply_markup=reply_markup
+    )
+    return ConversationHandler.END
 
 async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -315,10 +333,11 @@ async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user = query.from_user
         user_data = db.get_user_by_telegram_id(user.id)
-        wallet = db.get_wallet_by_user_id(user_data["id"])
+
+        wallet_address = context.user_data["wallet_address"]
 
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(wallet["evm_address"])
+        qr.add_data(wallet_address)
         qr.make(fit=True)
 
         img_buffer = BytesIO()
@@ -328,7 +347,7 @@ async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         caption = (
             "Scan this QR code to get your deposit address\n"
-            f"Address: `{wallet['evm_address']}`"
+            f"Address: `{wallet_address}`"
         )
 
         await query.message.reply_photo(
@@ -526,7 +545,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await start_sell_chain_selection(update, context)
 
     elif query.data == "deposit":
-        return await deposit_start(update, context)
+        return await start_deposit_chain_selection(update, context)
 
     elif query.data == "withdraw":
         return await withdraw_start(update, context)
@@ -539,6 +558,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if command_type == "balance":
             return await handle_chain_balance(update, context)
+        
+        elif command_type == "deposit": 
+            return await handle_chain_deposit(update, context)
 
     elif query.data == "help":
         await help_command(update, context)
@@ -1481,7 +1503,6 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("wallet", wallets_command))
-    application.add_handler(CommandHandler("deposit", deposit_start))
     application.add_handler(
         CallbackQueryHandler(help_command, pattern="^help_command$")
     )

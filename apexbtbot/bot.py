@@ -247,37 +247,72 @@ async def create_wallet_for_user(user_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = db.get_user_by_telegram_id(user.id)
+    reply_markup = InlineKeyboardMarkup(main_keyboard)
 
     if not user_data:
-        db.add_user(user.id, user.full_name)
+        result = db.add_user(user.id, user.full_name)
+        if not result:
+            await update.message.reply_text(
+                "❌ There was an error creating your account. Please try again later",
+                parse_mode="HTML"
+            )
+            return
         user_data = db.get_user_by_telegram_id(user.id)
 
     wallet = db.get_wallet_by_user_id(user_data["id"])
-    wallet_address = db.get_wallet_address_by_user_id(user_data["id"])
     
-    reply_markup = InlineKeyboardMarkup(main_keyboard)
-
     if wallet:
-        await update.message.reply_text(
-            f"<b>Welcome back to ApexBT Bot, {user.full_name}!</b>\n\n"
-            f"<u>Your Wallet Details:</u>\n"
-            f"🔑 <b>EVM Wallet:</b> <code>{wallet['evm_address']}</code> (Tap to copy)\n"
-            f"\n\n{Wallet.build_balance_string(wallet_address)}\n\n"
-            f"🔑 <b>Solana Wallet:</b> <code>{wallet['solana_address']}</code> (Tap to copy)",
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
+        try:
+            balance_string = Wallet.build_balance_string(wallet['evm_address'])
+            await update.message.reply_text(
+                f"<b>Welcome back to ApexBT Bot, {user.full_name}!</b>\n\n"
+                f"<u>Your Wallet Details:</u>\n"
+                f"🔑 <b>EVM Wallet:</b> <code>{wallet['evm_address']}</code> (Tap to copy)\n"
+                f"\n\n{balance_string}\n\n"
+                f"🔑 <b>Solana Wallet:</b> <code>{wallet['solana_address']}</code> (Tap to copy)",
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            # Fallback message if balance fetch fails
+            await update.message.reply_text(
+                f"<b>Welcome back to ApexBT Bot, {user.full_name}!</b>\n\n"
+                f"<u>Your Wallet Details:</u>\n"
+                f"🔑 <b>EVM Wallet:</b> <code>{wallet['evm_address']}</code> (Tap to copy)\n"
+                f"🔑 <b>Solana Wallet:</b> <code>{wallet['solana_address']}</code> (Tap to copy)\n\n"
+                f"⚠️ Balance information temporarily unavailable",
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
     else:
-        evm_wallet, solana_wallet = await create_wallet_for_user(user_data["id"])
-        await update.message.reply_text(
-            f"<b>Welcome to ApexBT Bot, {user.full_name}!</b>\n\n"
-            f"<u>Your Wallets Have Been Created:</u>\n"
-            f"🔑 <b>EVM Wallet:</b> <code>{evm_wallet['address']}</code> (Tap to copy)\n"
-            f"🔑 <b>Solana Wallet:</b> <code>{solana_wallet['address']}</code> (Tap to copy, WIP)\n\n",
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
+        try:
+            evm_wallet, solana_wallet = await create_wallet_for_user(user_data["id"])
+            
+            db.add_wallet(
+                user_data["id"],
+                evm_wallet['address'],
+                evm_wallet['private_key'],
+                solana_wallet['address'],
+                solana_wallet['private_key']
+            )
 
+            await update.message.reply_text(
+                f"<b>Welcome to ApexBT Bot, {user.full_name}!</b>\n\n"
+                f"<u>Your New Wallets Have Been Created:</u>\n"
+                f"🔑 <b>EVM Wallet:</b> <code>{evm_wallet['address']}</code> (Tap to copy)\n"
+                f"🔑 <b>Solana Wallet:</b> <code>{solana_wallet['address']}</code> (Tap to copy)\n\n"
+                f"✨ Your wallets are ready to use! You can now:\n"
+                f"• Deposit funds\n"
+                f"• Check balances\n"
+                f"• Start trading",
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                "❌ There was an error creating your wallets. Please try again later or contact support.",
+                parse_mode="HTML"
+            )
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(main_keyboard)

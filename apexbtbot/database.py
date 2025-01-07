@@ -103,10 +103,14 @@ class Database:
         """
         return self.execute(query, fetch_all=True)
     
-    def get_wallet_address_by_user_id(self, user_id):
+    def get_wallet_address_by_user_id(self, user_id, chain="base"):
         query = """
-        SELECT evm_address 
+        SELECT evm_address, solana_address
         FROM wallets 
         WHERE user_id = %s;
         """
-        return self.execute(query, (user_id,), fetch_one=True)["evm_address"]
+
+        key = "evm_address"
+        if chain != "base":
+            key = "solana_address"
+        return self.execute(query, (user_id,), fetch_one=True)[key]

@@ -229,8 +229,9 @@ class Wallet:
         balance_message = ""
 
         if not no_title:
-            balance_message = f"Total Portfolio Value: <code>${total_usd_value:.2f}</code>\n\n"
-            balance_message += "Your Positions:\n"
+            balance_message = f"<b>EVM Wallet Positions:</b>\n\n"
+            balance_message += f"Total Portfolio Value: <code>${total_usd_value:.2f}</code>\n\n"
+            balance_message += "<b>Your Positions:</b>\n"
 
         balance_message += balance_compiled_message
         return balance_message
@@ -322,8 +323,9 @@ class Wallet:
         balance_message = ""
         
         if not no_title:
-            balance_message = f"Total Portfolio Value: <code>${total_usd_value:.2f}</code>\n\n"
-            balance_message += "Your Positions:\n"
+            balance_message = f"<b>Solana Wallet Positions:</b>\n\n"
+            balance_message += f"Total Portfolio Value: <code>${total_usd_value:.2f}</code>\n\n"
+            balance_message += "<b>Your Positions:</b>\n"
             
         balance_message += balance_compiled_message
         return balance_message    

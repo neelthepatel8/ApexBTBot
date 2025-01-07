@@ -66,13 +66,11 @@ main_keyboard = [
     [InlineKeyboardButton("Help", callback_data="help_command")],
 ]
 
-
 def _get_dynamic_context(update: Update):
     if update.callback_query:
         return update.callback_query.from_user, update.callback_query.message
 
     return update.effective_user, update.message
-
 
 async def prompt_chain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, message = _get_dynamic_context(update)
@@ -90,7 +88,6 @@ async def prompt_chain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     return CHAIN_SELECTION
-
 
 def register_chain_handlers(application):
     balance_chain_handler = ConversationHandler(
@@ -174,18 +171,15 @@ def register_chain_handlers(application):
     application.add_handler(buy_chain_handler)
     application.add_handler(sell_chain_handler)
 
-
 async def start_balance_chain_selection(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     context.user_data["command_type"] = "balance"
     return await prompt_chain(update, context)
 
-
 async def start_buy_chain_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["command_type"] = "buy"
     return await prompt_chain(update, context)
-
 
 async def start_sell_chain_selection(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -193,24 +187,42 @@ async def start_sell_chain_selection(
     context.user_data["command_type"] = "sell"
     return await prompt_chain(update, context)
 
-
 async def handle_chain_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     selected_chain = query.data
     user, _ = _get_dynamic_context(update)
+    db_user = db.get_user_by_telegram_id(user.id)
+    wallet = db.get_wallet_by_user_id(db_user["id"])
 
-    if selected_chain == "base_chain":
-        wallet_address = db.get_wallet_address_by_user_id(user.id)
-        balance_message = Wallet.build_balance_string(wallet_address)
-    else:
-        wallet = db.get_wallet_by_user_id(user.id)
-        balance_message = Wallet.build_solana_balance_string(wallet["solana_address"])
+    if not wallet:
+        await no_wallet(update, context)
+        return ConversationHandler.END
 
-    await query.message.edit_text(balance_message, parse_mode="HTML")
+    await query.message.edit_text("Fetching balance...")
+    
+    try:
+        if selected_chain == "base_chain":
+            wallet_address = db.get_wallet_address_by_user_id(db_user["id"])
+            balance_message = Wallet.build_evm_balance_string(wallet_address)
+        else:
+            wallet_address = db.get_wallet_address_by_user_id(db_user["id"], chain="solana")
+            balance_message = Wallet.build_solana_balance_string(wallet_address)
+            
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        balance_message += f"\n\n<i>Last fetched at: {timestamp}</i>"
+        
+        await query.message.edit_text(balance_message, parse_mode="HTML")
+    except Exception as e:
+        await query.message.edit_text(f"Error fetching balance: {e}")
+        print(f"Error fetching balance: {e}")
+        
     return ConversationHandler.END
 
+async def no_wallet(update, context):
+    _, message = _get_dynamic_context(update)
+    await message.reply_text("No wallet found. Use /start first.")
+    return ConversationHandler.END
 
 async def handle_chain_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -227,7 +239,6 @@ async def handle_chain_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text("Solana buying coming soon!")
         return ConversationHandler.END
 
-
 async def handle_chain_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -242,7 +253,6 @@ async def handle_chain_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text("Solana selling coming soon!")
         return ConversationHandler.END
 
-
 def register_deposit_handlers(application):
     deposit_handler = CommandHandler("deposit", deposit_start)
     qr_handler = CallbackQueryHandler(show_qr_code, pattern="^show_qr$")
@@ -253,7 +263,6 @@ def register_deposit_handlers(application):
     application.add_handler(deposit_handler)
     application.add_handler(qr_handler)
     application.add_handler(check_balance_handler)
-
 
 async def deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -299,7 +308,6 @@ async def deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-
 async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
@@ -333,7 +341,6 @@ async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Sorry, there was an error generating the QR code. Please use the address provided above."
         )
 
-
 async def check_deposit_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
@@ -362,11 +369,9 @@ async def check_deposit_balance(update: Update, context: ContextTypes.DEFAULT_TY
             "Sorry, there was an error checking your balance. Please try again later."
         )
 
-
 def register_withdraw_handlers(application):
     withdraw_handler = CommandHandler("withdraw", withdraw_start)
     application.add_handler(withdraw_handler)
-
 
 async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -405,14 +410,12 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.chat_member
     user = chat_member.new_chat_member.user
 
     if chat_member.new_chat_member.status == "member" and not user.is_bot:
         await start(update, context)
-
 
 async def create_wallet_for_user(user_id):
     evm_wallet = Wallet.create_evm_wallet()
@@ -427,7 +430,6 @@ async def create_wallet_for_user(user_id):
     )
 
     return evm_wallet, solana_wallet
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -492,7 +494,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(main_keyboard)
@@ -510,20 +511,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
-
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "check_balance":
-        await check_balance(update, context)
+        await start_balance_chain_selection(update, context)
         return ConversationHandler.END
 
     elif query.data == "buy_start":
-        return await start_buy_conversation(update, context)
+        return await start_buy_chain_selection(update, context)
 
     elif query.data == "sell_start":
-        return await start_sell_conversation(update, context)
+        return await start_sell_chain_selection(update, context)
 
     elif query.data == "deposit":
         return await deposit_start(update, context)
@@ -536,41 +536,13 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data in ["base_chain", "solana_chain"]:
         command_type = context.user_data.get("command_type")
-        if command_type == "buy":
-            if query.data == "base_chain":
-                await query.message.edit_text(
-                    "Enter the token address you want to buy:"
-                )
-                return BUY_TOKEN_ADDRESS
-            else:
-                await query.message.edit_text("Solana buying coming soon!")
-                return ConversationHandler.END
-
-        elif command_type == "sell":
-            if query.data == "base_chain":
-                return await start_sell_conversation(update, context)
-            else:
-                await query.message.edit_text("Solana selling coming soon!")
-                return ConversationHandler.END
-
-        elif command_type == "balance":
-            user, _ = _get_dynamic_context(update)
-            if query.data == "base_chain":
-                wallet_address = db.get_wallet_address_by_user_id(user.id)
-                balance_message = Wallet.build_balance_string(wallet_address)
-            else:  # solana_chain
-                wallet = db.get_wallet_by_user_id(user.id)
-                balance_message = Wallet.build_solana_balance_string(
-                    wallet["solana_address"]
-                )
-
-            await query.message.edit_text(balance_message, parse_mode="HTML")
-            return ConversationHandler.END
+        
+        if command_type == "balance":
+            return await handle_chain_balance(update, context)
 
     elif query.data == "help":
         await help_command(update, context)
         return ConversationHandler.END
-
 
 async def get_user_token_balance(
     token_address: str, user_id: int, w3: Web3
@@ -598,40 +570,6 @@ async def get_user_token_balance(
         return None, None
 
 
-async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        user = update.callback_query.from_user
-        await update.callback_query.answer()
-    else:
-        user = update.effective_user
-
-    user_data = db.get_user_by_telegram_id(user.id)
-    if not user_data:
-        await update.effective_message.reply_text(
-            "You are not registered. Use /start to register."
-        )
-        return
-
-    wallet = db.get_wallet_by_user_id(user_data["id"])
-    wallet_address = db.get_wallet_address_by_user_id(user_data["id"])
-    if not wallet:
-        await update.effective_message.reply_text(
-            "You don't have a wallet. Use /start to create one."
-        )
-        return
-
-    try:
-        balance_message = Wallet.build_evm_balance_string(wallet_address)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        balance_message += f"\n\n<i>Last fetched at: {timestamp}</i>"
-
-        await context.bot.send_message(
-            chat_id=user.id, text=balance_message, parse_mode="HTML"
-        )
-    except Exception as e:
-        print(f"Error fetching balance: {e}")
-
-
 async def prompt_for_token(update: Update, operation: str):
     message = f"Enter a token address to {operation}"
     if update.callback_query:
@@ -640,10 +578,8 @@ async def prompt_for_token(update: Update, operation: str):
         await update.message.reply_text(message)
     return BUY_TOKEN_ADDRESS if operation == "buy" else SELL_TOKEN_ADDRESS
 
-
 async def start_buy_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await prompt_for_token(update, "buy")
-
 
 async def token_not_found(update: Update, operation: str):
     keyboard = [
@@ -659,7 +595,6 @@ async def token_not_found(update: Update, operation: str):
     )
     return BUY_TOKEN_ADDRESS if operation == "buy" else SELL_TOKEN_ADDRESS
 
-
 async def retry_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -671,13 +606,11 @@ async def retry_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         return await start_sell_conversation(update, context)
 
-
 async def validate_token(token_address, update: Update, operation: str):
     if not Web3.is_address(token_address):
         await token_not_found(update, operation)
         return False
     return True
-
 
 async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token_address = update.message.text.strip()
@@ -797,7 +730,6 @@ async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return BUY_AMOUNT_CHOICE
 
-
 async def buy_amount_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -815,7 +747,6 @@ async def buy_amount_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     return BUY_AMOUNT
-
 
 async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -835,7 +766,7 @@ async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data = db.get_user_by_telegram_id(user.id)
         wallet = db.get_wallet_by_user_id(user_data["id"])
         if not wallet:
-            await update.message.reply_text("No wallet found. Use /start first.")
+            await no_wallet(update, context)
             return ConversationHandler.END
 
         eth_balance = Wallet.get_evm_balance(wallet["evm_address"])
@@ -894,7 +825,6 @@ async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return BUY_AMOUNT
 
-
 async def handle_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -904,7 +834,6 @@ async def handle_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif query.data == "cancel":
         await query.message.reply_text("Transaction cancelled.")
         return ConversationHandler.END
-
 
 async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1025,7 +954,6 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-
 async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         message = update.callback_query.message
@@ -1099,7 +1027,6 @@ async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_
         )
         return ConversationHandler.END
 
-
 async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1145,7 +1072,6 @@ async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     return SELL_AMOUNT_CHOICE
 
-
 async def handle_sell_amount_selection(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
@@ -1166,7 +1092,6 @@ async def handle_sell_amount_selection(
     context.user_data["sell_amount"] = sell_amount
 
     return await show_sell_confirmation(update, context)
-
 
 async def show_sell_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1203,7 +1128,6 @@ async def show_sell_confirmation(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     return SELL_CONFIRM
-
 
 async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1277,7 +1201,6 @@ async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SELL_AMOUNT
 
-
 async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1291,7 +1214,7 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data = db.get_user_by_telegram_id(user.id)
         wallet = db.get_wallet_by_user_id(user_data["id"])
         if not wallet:
-            await query.message.reply_text("No wallet found. Use /start first.")
+            await no_wallet(update, context)
             return ConversationHandler.END
 
         token_address = Web3.to_checksum_address(
@@ -1512,14 +1435,12 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if update.callback_query:
         message = update.callback_query.message
     await message.reply_text("Cancelled.")
     return ConversationHandler.END
-
 
 async def wallets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -1552,7 +1473,6 @@ async def wallets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Solana Wallet**: `{solana_address}` (Tap to copy)\n\n",
         parse_mode="Markdown",
     )
-
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()

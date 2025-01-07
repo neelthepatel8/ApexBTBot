@@ -250,13 +250,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(main_keyboard)
 
     if not user_data:
-        result = db.add_user(user.id, user.full_name)
-        if not result:
-            await update.message.reply_text(
-                "❌ There was an error creating your account. Please try again later",
-                parse_mode="HTML"
-            )
-            return
+        db.add_user(user.id, user.full_name)
         user_data = db.get_user_by_telegram_id(user.id)
 
     wallet = db.get_wallet_by_user_id(user_data["id"])
@@ -274,7 +268,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
         except Exception as e:
-            # Fallback message if balance fetch fails
             await update.message.reply_text(
                 f"<b>Welcome back to ApexBT Bot, {user.full_name}!</b>\n\n"
                 f"<u>Your Wallet Details:</u>\n"

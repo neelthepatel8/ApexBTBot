@@ -1,7 +1,8 @@
 import os
 import base64
+import base58 
+
 import requests
-import json 
 
 from cryptography.fernet import Fernet
 from web3 import Web3
@@ -9,12 +10,11 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from dotenv import load_dotenv
+from spl.token.client import Token
+from spl.token.constants import TOKEN_PROGRAM_ID
+from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TokenAccountOpts
 
-from decimal import Decimal
-
-from apexbtbot.abi import erc20 as erc20abi
-from apexbtbot.tokens import erc20 as erc20_tokens
-from apexbtbot import web3utils
 from apexbtbot.alchemy import AlchemyAPIWrapper
 
 load_dotenv()
@@ -51,7 +51,6 @@ class Wallet:
             print(f"Error fetching EVM wallet balance: {e}")
             return 0.0
         
-
     @staticmethod
     def create_solana_wallet():
         keypair = Keypair()
@@ -88,7 +87,6 @@ class Wallet:
             return True
         except ValueError:
             return False
-        
 
     @staticmethod
     def is_spam_token(metadata):
@@ -205,7 +203,6 @@ class Wallet:
             return token_info_dict, list(token_info_dict.keys())
         return token_info_dict
     
-    
     @staticmethod
     def build_balance_string(wallet_address, no_title=False, no_eth=False):
         
@@ -238,5 +235,96 @@ class Wallet:
         balance_message += balance_compiled_message
         return balance_message
     
+    @staticmethod
+    def get_solana_token_balances(public_key):
+        client = Client(SOLANA_RPC_URL, commitment=Confirmed)
+        pubkey = Pubkey.from_string(public_key)
+        try:
+            response = client.get_token_accounts_by_owner(
+                pubkey,
+                TokenAccountOpts(program_id=TOKEN_PROGRAM_ID, encoding="base64")
+            )
+            
+            token_balances = {}
+            for account in response.value:
+                try:
+                    account_data = account.account.data
+                    mint = str(base58.b58encode(account_data[:32]), 'utf-8')
+                    amount = int.from_bytes(account_data[64:72], 'little')
+                    decimals = account_data[44]  
+                    
+                    balance = amount / (10 ** decimals)
+                    
+                    if balance <= 0:
+                        continue
+                    
+                    metadata_url = f"https://api.jup.ag/price/v2?ids={mint}"
+                    try:
+                        metadata_response = requests.get(metadata_url, timeout=5).json()
+                        token_data = metadata_response.get('data', {}).get(mint, {})
+                        
+                        if token_data:
+                            price = float(token_data.get('price', 0))
+                            symbol = token_data.get('symbol', 'Unknown')
+                            name = token_data.get('name', 'Unknown Token')
+                            
+                            token_balances[mint] = {
+                                'balance': balance,
+                                'symbol': symbol,
+                                'name': name,
+                                'price_in_usd': price,
+                                'value_in_usd': price * balance
+                            }
+                    except requests.exceptions.RequestException:
+                        print(f"Failed to fetch metadata for token {mint}")
+                        continue
+                    
+                except Exception as e:
+                    print(f"Error processing token account: {e}")
+                    continue
+                    
+            return token_balances
+            
+        except Exception as e:
+            print(f"Error fetching Solana token balances: {e}")
+            return {}
+
+    @staticmethod
+    def build_solana_balance_string(public_key, no_title=False):
+        token_balances = Wallet.get_solana_token_balances(public_key)
+        sol_balance = Wallet.get_solana_balance(public_key)
         
+        try:
+            sol_price_response = requests.get(
+                "https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112",
+                timeout=5
+            ).json()
+            sol_price = float(sol_price_response['data']['So11111111111111111111111111111111111111112']['price'])
+        except (requests.exceptions.RequestException, KeyError, ValueError):
+            print("Failed to fetch SOL price")
+            sol_price = 0
+            
+        sol_value_in_usd = sol_price * sol_balance
+        
+        balance_compiled_message = f"SOL: <code>{sol_balance:.4f} (${sol_value_in_usd:.2f})</code>\n"
+        total_usd_value = sol_value_in_usd
+        
+        for _, data in token_balances.items():
+            balance = data["balance"]
+            symbol = data["symbol"]
+            value_in_usd = data["value_in_usd"]
+            
+            total_usd_value += value_in_usd
+            
+            if balance > 0.0:
+                balance_compiled_message += f"{symbol}: <code>{balance:.4f} (${value_in_usd:.2f})</code>\n"
+                
+        balance_message = ""
+        
+        if not no_title:
+            balance_message = f"Total Portfolio Value: <code>${total_usd_value:.2f}</code>\n\n"
+            balance_message += "Your Positions:\n"
+            
+        balance_message += balance_compiled_message
+        return balance_message    
     

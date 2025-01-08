@@ -12,18 +12,24 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from web3 import Web3, exceptions
+from solana.rpc.api import Client
 from decimal import Decimal
 from datetime import datetime
 from io import BytesIO
 import os
 import time
 import qrcode
+import base64
 
 
 from apexbtbot.database import Database
 from apexbtbot.wallet import Wallet
 from apexbtbot import abi, web3utils, settings, util
 from apexbtbot.alchemy import AlchemyAPIWrapper
+from apexbtbot.solana import util as solana_utils
+from apexbtbot.constants import SOL_DECIMAL
+from apexbtbot.solana.functions import _buy as buy_on_sol_chain
+from apexbtbot.solana.fetch import JupiterAggregator, get_amm_v4_pair_from_rpc
 
 db = Database()
 db.init()
@@ -31,6 +37,7 @@ db.init()
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ETH_NODE_URL = os.getenv("ETH_NODE_URL")
+SOL_NODE_URL = os.getenv("SOL_NODE_URL")
 
 BUY_TOKEN_ADDRESS, BUY_AMOUNT_CHOICE, BUY_AMOUNT, BUY_CONFIRM = range(4)
 SELL_TOKEN_ADDRESS, SELL_DESTINATION_TOKEN, SELL_AMOUNT, SELL_CONFIRM = range(4)
@@ -42,8 +49,10 @@ CHAIN_SELECTION = range(100, 101)
 SELL_AMOUNT_CHOICE = "SELL_AMOUNT_CHOICE"
 
 alchemy = AlchemyAPIWrapper(ETH_NODE_URL)
+radiyum = Client(SOL_NODE_URL)
 
 w3 = Web3(Web3.HTTPProvider(ETH_NODE_URL))
+jupiter = JupiterAggregator()
 
 UNISWAP_ROUTER_ADDRESS = "0x2626664c2603336E57B271c5C0b26F421741e481"
 
@@ -66,11 +75,42 @@ main_keyboard = [
     [InlineKeyboardButton("Help", callback_data="help_command")],
 ]
 
+
+def _get_keypair_from_user_id(user_id):
+    user_data = db.get_user_by_telegram_id(user_id)
+    wallet = db.get_wallet_by_user_id(user_data["id"])
+    decoded = base64.b64decode(Wallet.decrypt_private_key(wallet["solana_private_key"]))
+    keypair = Wallet.get_keypair_from_private_key(decoded)
+    return keypair
+
+
+def buy_sol_chain(update, context):
+
+    # need
+    token_address = ""
+    slippage = ""
+    user = None
+    buy_amount = 0
+
+    payer_keypair = _get_keypair_from_user_id(user.id)
+
+    pair_addresses = get_amm_v4_pair_from_rpc(token_address)
+
+    if len(pair_addresses) == 0:
+        print("error")
+        return
+
+    pair_address = pair_addresses[0]
+
+    _buy(pair_address, payer_keypair, buy_amount, slippage)
+
+
 def _get_dynamic_context(update: Update):
     if update.callback_query:
         return update.callback_query.from_user, update.callback_query.message
 
     return update.effective_user, update.message
+
 
 async def prompt_chain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, message = _get_dynamic_context(update)
@@ -88,6 +128,7 @@ async def prompt_chain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     return CHAIN_SELECTION
+
 
 def register_chain_handlers(application):
     balance_chain_handler = ConversationHandler(
@@ -171,15 +212,18 @@ def register_chain_handlers(application):
     application.add_handler(buy_chain_handler)
     application.add_handler(sell_chain_handler)
 
+
 async def start_balance_chain_selection(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     context.user_data["command_type"] = "balance"
     return await prompt_chain(update, context)
 
+
 async def start_buy_chain_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["command_type"] = "buy"
     return await prompt_chain(update, context)
+
 
 async def start_sell_chain_selection(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -187,9 +231,13 @@ async def start_sell_chain_selection(
     context.user_data["command_type"] = "sell"
     return await prompt_chain(update, context)
 
-async def start_deposit_chain_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def start_deposit_chain_selection(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     context.user_data["command_type"] = "deposit"
     return await prompt_chain(update, context)
+
 
 async def handle_chain_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -204,29 +252,33 @@ async def handle_chain_balance(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     await query.message.edit_text("Fetching balance...")
-    
+
     try:
         if selected_chain == "base_chain":
             wallet_address = db.get_wallet_address_by_user_id(db_user["id"])
             balance_message = Wallet.build_evm_balance_string(wallet_address)
         else:
-            wallet_address = db.get_wallet_address_by_user_id(db_user["id"], chain="solana")
+            wallet_address = db.get_wallet_address_by_user_id(
+                db_user["id"], chain="solana"
+            )
             balance_message = Wallet.build_solana_balance_string(wallet_address)
-            
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         balance_message += f"\n\n<i>Last fetched at: {timestamp}</i>"
-        
+
         await query.message.edit_text(balance_message, parse_mode="HTML")
     except Exception as e:
         await query.message.edit_text(f"Error fetching balance: {e}")
         print(f"Error fetching balance: {e}")
-        
+
     return ConversationHandler.END
+
 
 async def no_wallet(update, context):
     _, message = _get_dynamic_context(update)
     await message.reply_text("No wallet found. Use /start first.")
     return ConversationHandler.END
+
 
 async def handle_chain_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -235,13 +287,9 @@ async def handle_chain_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_chain = query.data
     context.user_data["selected_chain"] = selected_chain
 
-    if selected_chain == "base_chain":
-        await query.message.edit_text("Enter the token address you want to buy:")
-        return BUY_TOKEN_ADDRESS
-    else:
-        # SOLANA BUY
-        await query.message.edit_text("Solana buying coming soon!")
-        return ConversationHandler.END
+    await query.message.edit_text("Enter the token address you want to buy:")
+    return BUY_TOKEN_ADDRESS
+
 
 async def handle_chain_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -256,6 +304,7 @@ async def handle_chain_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # SOLANA SELL
         await query.message.edit_text("Solana selling coming soon!")
         return ConversationHandler.END
+
 
 def register_deposit_handlers(application):
     deposit_handler = ConversationHandler(
@@ -273,6 +322,7 @@ def register_deposit_handlers(application):
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     application.add_handler(deposit_handler)
+
 
 async def handle_chain_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -294,17 +344,16 @@ async def handle_chain_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-
     token_name, wallet_address, network_name, chain_id = range(4)
 
-    if selected_chain == 'base_chain':
-        token_name = "ETH" 
-        wallet_address = wallet['evm_address']
+    if selected_chain == "base_chain":
+        token_name = "ETH"
+        wallet_address = wallet["evm_address"]
         network_name = "Base"
         chain_id = 8453
-    else: 
+    else:
         token_name = "SOL"
-        wallet_address = wallet['solana_address']
+        wallet_address = wallet["solana_address"]
         network_name = "Solana"
         chain_id = 101
 
@@ -320,11 +369,12 @@ async def handle_chain_deposit(update: Update, context: ContextTypes.DEFAULT_TYP
         "• Deposits confirm in 1-2 minutes\n\n"
         "Click 'Check Balance' after sending to verify your deposit."
     )
-        
+
     await query.message.edit_text(
         message, parse_mode="Markdown", reply_markup=reply_markup
     )
     return ConversationHandler.END
+
 
 async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -360,6 +410,7 @@ async def show_qr_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Sorry, there was an error generating the QR code. Please use the address provided above."
         )
 
+
 async def check_deposit_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
@@ -388,9 +439,11 @@ async def check_deposit_balance(update: Update, context: ContextTypes.DEFAULT_TY
             "Sorry, there was an error checking your balance. Please try again later."
         )
 
+
 def register_withdraw_handlers(application):
     withdraw_handler = CommandHandler("withdraw", withdraw_start)
     application.add_handler(withdraw_handler)
+
 
 async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -429,12 +482,14 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.chat_member
     user = chat_member.new_chat_member.user
 
     if chat_member.new_chat_member.status == "member" and not user.is_bot:
         await start(update, context)
+
 
 async def create_wallet_for_user(user_id):
     evm_wallet = Wallet.create_evm_wallet()
@@ -450,6 +505,7 @@ async def create_wallet_for_user(user_id):
 
     return evm_wallet, solana_wallet
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = db.get_user_by_telegram_id(user.id)
@@ -463,13 +519,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if wallet:
         try:
-            balance_string = Wallet.build_evm_balance_string(wallet["evm_address"])
+            evm_balance_string = Wallet.build_evm_balance_string(wallet["evm_address"])
+            sol_balance_string = Wallet.build_solana_balance_string(
+                wallet["solana_address"]
+            )
             await update.message.reply_text(
                 f"<b>Welcome back to ApexBT Bot, {user.full_name}!</b>\n\n"
                 f"<u>Your Wallet Details:</u>\n"
                 f"🔑 <b>EVM Wallet:</b> <code>{wallet['evm_address']}</code> (Tap to copy)\n"
-                f"\n\n{balance_string}\n\n"
-                f"🔑 <b>Solana Wallet:</b> <code>{wallet['solana_address']}</code> (Tap to copy)",
+                f"\n\n{evm_balance_string}\n\n"
+                f"🔑 <b>Solana Wallet:</b> <code>{wallet['solana_address']}</code> (Tap to copy)"
+                f"\n\n{sol_balance_string}\n\n"
+                f"",
                 reply_markup=reply_markup,
                 parse_mode="HTML",
             )
@@ -513,6 +574,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(main_keyboard)
@@ -529,6 +591,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode="Markdown",
     )
+
 
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -555,16 +618,17 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data in ["base_chain", "solana_chain"]:
         command_type = context.user_data.get("command_type")
-        
+
         if command_type == "balance":
             return await handle_chain_balance(update, context)
-        
-        elif command_type == "deposit": 
+
+        elif command_type == "deposit":
             return await handle_chain_deposit(update, context)
 
     elif query.data == "help":
         await help_command(update, context)
         return ConversationHandler.END
+
 
 async def prompt_for_token(update: Update, operation: str):
     message = f"Enter a token address to {operation}"
@@ -574,10 +638,12 @@ async def prompt_for_token(update: Update, operation: str):
         await update.message.reply_text(message)
     return BUY_TOKEN_ADDRESS if operation == "buy" else SELL_TOKEN_ADDRESS
 
+
 async def start_buy_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await prompt_for_token(update, "buy")
 
-async def token_not_found(update: Update, operation: str):
+
+async def token_not_found(message, operation: str):
     keyboard = [
         [
             InlineKeyboardButton(
@@ -585,11 +651,12 @@ async def token_not_found(update: Update, operation: str):
             )
         ]
     ]
-    await update.message.reply_text(
+    await message.reply_text(
         "Token not found.",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return BUY_TOKEN_ADDRESS if operation == "buy" else SELL_TOKEN_ADDRESS
+
 
 async def retry_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -602,100 +669,107 @@ async def retry_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         return await start_sell_conversation(update, context)
 
-async def validate_token(token_address, update: Update, operation: str):
+
+async def validate_token(token_address, message, operation: str):
     if not Web3.is_address(token_address):
-        await token_not_found(update, operation)
+        await token_not_found(message, operation)
         return False
     return True
 
+
 async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user, message = _get_dynamic_context(update)
     token_address = update.message.text.strip()
-    if not await validate_token(token_address, update, "buy"):
+    selected_chain = context.user_data.get("selected_chain")
+
+    user_data = db.get_user_by_telegram_id(user.id)
+    wallet = db.get_wallet_by_user_id(user_data["id"])
+    
+    if selected_chain == "base_chain":
+        name, symbol, decimals, price_in_eth, eth_balance, price_in_usd, keyboard = (
+            await _buy_token_address_evm(token_address, wallet, message)
+        )
+
+    elif selected_chain == "solana_chain":
+        name, symbol, decimals, price_in_sol, sol_balance, price_in_usd, keyboard = (
+            await _buy_token_address_sol(token_address, wallet, message)
+        )
+
+    context.user_data["buy_token_address"] = token_address
+    context.user_data["buy_token_symbol"] = symbol
+    context.user_data["buy_token_decimals"] = decimals
+    context.user_data["buy_token_price_in_native"] = price_in_eth if selected_chain == "base_chain" else price_in_sol
+    context.user_data["buy_token_price_in_usd"] = price_in_usd
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    explorer_link = (
+        f"https://basescan.org/token/{token_address}"
+        if selected_chain == "base_chain"
+        else f"https://solscan.io/token/{token_address}"
+    )
+
+    balance_text = (
+        f"{eth_balance:.4f} ETH"
+        if selected_chain == "base_chain"
+        else f"{sol_balance:.4f} SOL"
+    )
+
+    price_text = (
+        f"${price_in_usd:.8f} per token ({price_in_eth:.9f} ETH)"
+        if selected_chain == "base_chain"
+        else f"${price_in_usd:.8f} per token ({price_in_sol:.9f} SOL)"
+    )
+
+    url_name = "Basescan" if selected_chain == "base_chain" else "Solscan"
+    await message.reply_text(
+        f"Buy ${symbol} -- ({name})\n"
+        f"`{token_address}`\n"
+        f"[{url_name} ↗]({explorer_link})"
+        f"\n\nYour balance: {balance_text}\n"
+        f"Price: {price_text}",
+        parse_mode="Markdown",
+        reply_markup=reply_markup,
+    )
+
+    return BUY_AMOUNT_CHOICE
+
+async def _buy_token_address_sol(token_address, wallet, message):
+    name, symbol, decimals, price_in_sol, price_in_usd = solana_utils.get_token_info(token_address)
+    
+    if not name:
+        await message.reply_text(
+            "Token not found, please try again."
+        )
+        return ConversationHandler.END
+
+    sol_balance = Wallet.get_solana_balance(wallet['solana_address'])
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "Enter amount (in SOL)", callback_data="buy_amount_sol"
+            ),
+        ]
+    ]
+
+    return name, symbol, decimals, price_in_sol, sol_balance, price_in_usd, keyboard
+
+async def _buy_token_address_evm(token_address, wallet, message):
+    if not await validate_token(token_address, message, "buy"):
         return BUY_TOKEN_ADDRESS
 
     name, symbol, decimals, price_in_eth = await web3utils.get_token_info(
         token_address, w3
     )
 
-    # Check liquidity and get pool info
-    try:
-        _, fee_tier = await web3utils.get_pair_address(token_address, w3)
-
-        # Try to quote a small test amount (0.1 ETH) to check liquidity
-        quoter = w3.eth.contract(
-            address=Web3.to_checksum_address(
-                "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"
-            ),
-            abi=abi.uniswap_quote,
-        )
-
-        test_amount = Web3.to_wei(0.1, "ether")
-        quote_params = (
-            Web3.to_checksum_address(
-                "0x4200000000000000000000000000000000000006"
-            ),  # WETH
-            Web3.to_checksum_address(token_address),
-            test_amount,
-            fee_tier,
-            0,
-        )
-
-        result = quoter.functions.quoteExactInputSingle(quote_params).call()
-        liquidity_warning = ""
-
-        try:
-            test_quote = quoter.functions.quoteExactInputSingle(
-                (
-                    Web3.to_checksum_address(
-                        "0x4200000000000000000000000000000000000006"
-                    ),
-                    Web3.to_checksum_address(token_address),
-                    Web3.to_wei(1, "ether"),
-                    fee_tier,
-                    0,
-                )
-            ).call()
-
-            if (
-                not test_quote
-                or abs(
-                    test_quote[0] / Web3.to_wei(1, "ether") - result[0] / test_amount
-                )
-                > 0.05
-            ):
-                liquidity_warning = (
-                    "\n⚠️ *Warning: Low liquidity detected. Trade carefully!*"
-                )
-        except Exception:
-            liquidity_warning = (
-                "\n⚠️ *Warning: Very low liquidity. Large trades may fail!*"
-            )
-
-    except Exception as e:
-        if "SPL" in str(e):
-            await update.message.reply_text(
-                f"⚠️ This token has extremely low liquidity and may be difficult to trade.\n"
-                f"Consider checking the pool on Basescan first:\n"
-                f"[View Pool ↗](https://basescan.org/token/{token_address})",
-                parse_mode="Markdown",
-            )
-            return BUY_TOKEN_ADDRESS
-        liquidity_warning = (
-            "\n⚠️ *Warning: Could not verify liquidity. Trade with caution!*"
-        )
-
-    context.user_data["buy_token_address"] = token_address
-    context.user_data["buy_token_symbol"] = symbol
-    context.user_data["buy_token_decimals"] = decimals
-
-    user_data = db.get_user_by_telegram_id(update.effective_user.id)
-    wallet = db.get_wallet_by_user_id(user_data["id"])
-    evm_address = wallet.get("evm_address")
-    eth_balance = Wallet.get_evm_balance(evm_address)
+    price_in_eth = 1 / price_in_eth
+    eth_balance = Wallet.get_evm_balance(wallet["evm_address"])
 
     eth_to_usd = web3utils.fetch_eth_to_usd()
     if eth_to_usd is None:
-        await update.message.reply_text(
+        await message.reply_text(
             "Could not fetch the current ETH/USD price. Try again later."
         )
         return ConversationHandler.END
@@ -704,6 +778,8 @@ async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Decimal(price_in_eth) * Decimal(eth_to_usd) if price_in_eth else "N/A"
     )
 
+    print(f"{price_in_eth=} {price_in_usd=}")
+
     keyboard = [
         [
             InlineKeyboardButton(
@@ -711,20 +787,8 @@ async def buy_token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         ]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        f"Buy ${symbol} -- ({name})\n"
-        f"`{token_address}`\n"
-        f"[Basescan ↗](https://basescan.org/token/{token_address})"
-        f"\n\nYour balance: {eth_balance:.4f} ETH\n"
-        f"Price: ${price_in_usd:.8f} per token ({price_in_eth:.9f} ETH)"
-        f"{liquidity_warning}\n\n",
-        parse_mode="Markdown",
-        reply_markup=reply_markup,
-    )
-
-    return BUY_AMOUNT_CHOICE
+    return name, symbol, decimals, price_in_eth, eth_balance, price_in_usd, keyboard
 
 async def buy_amount_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -739,12 +803,15 @@ async def buy_amount_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await query.message.reply_text(
-            "Enter the amount in USD you want to buy", parse_mode="Markdown"
+            "Enter the amount in SOL you want to buy", parse_mode="Markdown"
         )
 
     return BUY_AMOUNT
 
 async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user, message = _get_dynamic_context(update)
+    selected_chain = context.user_data.get("selected_chain")
+    
     try:
         amount = float(update.message.text.strip())
         if amount <= 0:
@@ -755,45 +822,66 @@ async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     token_address = context.user_data["buy_token_address"]
     token_symbol = context.user_data["buy_token_symbol"]
-    amount_type = context.user_data["buy_amount_type"]
+    price_in_native = context.user_data["buy_token_price_in_native"]
+    price_in_usd = float(context.user_data["buy_token_price_in_usd"])
 
+    value_in_usd = float(price_in_usd) * amount 
+    
     try:
-        user = update.effective_user
         user_data = db.get_user_by_telegram_id(user.id)
         wallet = db.get_wallet_by_user_id(user_data["id"])
         if not wallet:
             await no_wallet(update, context)
             return ConversationHandler.END
+        
+        wallet_address = wallet["evm_address"] if selected_chain == "base_chain" else wallet["solana_address"]
 
-        eth_balance = Wallet.get_evm_balance(wallet["evm_address"])
+        balance = Wallet.get_evm_balance(wallet_address) if selected_chain == "base_chain" else  Wallet.get_solana_balance(wallet_address)
 
-        price_in_eth = await web3utils.get_token_price(token_address, w3)
-        if amount_type == "buy_amount_usd":
-            eth_price_usd = web3utils.fetch_eth_to_usd()
-            eth_amount = amount / eth_price_usd
-            token_amount = eth_amount / price_in_eth
+        token_amount = amount / float(price_in_native)
+
+
+        if selected_chain == "base_chain":
+            gas_fee = settings.default.base.gas_fee
+            
+            estimated_gas_cost = Web3.to_wei(gas_fee, "gwei") * 21000
+
+            total_cost = Web3.to_wei(price_in_native, "ether") + estimated_gas_cost
+
+            if Web3.from_wei(total_cost, "ether") > balance:
+                await update.message.reply_text(
+                    f"Insufficient balance in your EVM wallet. Please deposit and try again.\n"
+                    f"Required: {Web3.from_wei(total_cost, 'ether'):.6f} ETH "
+                    f"(including gas)\n"
+                    f"Your balance: {balance:.6f} ETH"
+                )
+                return ConversationHandler.END
+
         else:
-            eth_amount = amount
-            token_amount = amount / price_in_eth
-
-        gas_fee = settings.default.gas_fee
-        estimated_gas_cost = Web3.to_wei(gas_fee, "gwei") * 21000
-        total_cost = Web3.to_wei(eth_amount, "ether") + estimated_gas_cost
-
-        if Web3.from_wei(total_cost, "ether") > eth_balance:
-            await update.message.reply_text(
-                f"Insufficient balance in your EVM wallet. Please deposit and try again.\n"
-                f"Required: {Web3.from_wei(total_cost, 'ether'):.6f} ETH "
-                f"(including gas)\n"
-                f"Your balance: {eth_balance:.6f} ETH"
-            )
-            return ConversationHandler.END
-
+            gas_fee = 0.0001
+            unit_budget = settings.default.sol.unit_budget
+            unit_price = settings.default.sol.unit_price
+            max_gas_fee = unit_budget * unit_price  
+            max_gas_fee_sol = max_gas_fee / SOL_DECIMAL  
+            
+            rent_exemption = 0.00203928 
+            
+            total_cost = price_in_native + max_gas_fee_sol + rent_exemption
+            
+            if total_cost > balance:
+                await update.message.reply_text(
+                    f"Insufficient balance in your Solana wallet. Please deposit and try again.\n"
+                    f"Required: {total_cost:.6f} SOL "
+                    f"(including max gas fee of {max_gas_fee_sol:.6f} SOL and rent of {rent_exemption} SOL)\n"
+                    f"Your balance: {balance:.6f} SOL"
+                )
+                return ConversationHandler.END
+            
         context.user_data.update(
-            {"buy_amount_eth": eth_amount, "buy_amount_tokens": token_amount}
+            {"buy_amount_native": price_in_native, "buy_amount_tokens": token_amount}
         )
 
-        slippage = settings.default.slippage
+        slippage = settings.default.base.slippage
         keyboard = [
             [
                 InlineKeyboardButton("Confirm", callback_data="buy_confirm"),
@@ -802,12 +890,13 @@ async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(
+        gas_fee_unit = 'gwei' if selected_chain == "base_chain" else 'SOL'
+        await message.reply_text(
             "**Transaction Preview**\n\n"
-            f"You will spend: `{eth_amount:.6f} ETH`\n"
+            f"You will spend: `{amount:.6f} {'ETH' if selected_chain == 'base_chain' else 'SOL'} (${token_amount * price_in_usd:.2f})`\n"
             f"You will receive: `{token_amount:.6f} {token_symbol}`\n"
             f"Token Address: `{token_address}`\n"
-            f"Gas Fee: `{gas_fee} gwei`\n"
+            f"Gas Fee: `{gas_fee} {gas_fee_unit}`\n"
             f"Slippage: `{slippage}%`\n\n",
             parse_mode="Markdown",
             reply_markup=reply_markup,
@@ -821,6 +910,7 @@ async def buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return BUY_AMOUNT
 
+
 async def handle_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -831,28 +921,71 @@ async def handle_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.message.reply_text("Transaction cancelled.")
         return ConversationHandler.END
 
+
 async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    user, message = _get_dynamic_context(update)
+    selected_chain = context.user_data.get("selected_chain")
+
     token_address = context.user_data["buy_token_address"]
     token_symbol = context.user_data["buy_token_symbol"]
     token_decimals = context.user_data["buy_token_decimals"]
-    amount_in_eth = context.user_data["buy_amount_eth"]
-    slippage = settings.default.gas_fee
-    user = update.effective_user
+    amount_in_native = context.user_data["buy_amount_native"]
+    amount_in_token = context.user_data["buy_amount_tokens"]
+
     user_data = db.get_user_by_telegram_id(user.id)
     wallet = db.get_wallet_by_user_id(user_data["id"])
-    evm_private_key = Wallet.decrypt_private_key(wallet["evm_private_key"])
-    sender_address = wallet["evm_address"]
 
-    keyboard_balance = [
+    keyboard = [
         [
             InlineKeyboardButton(
                 text="View your Positions", callback_data="check_balance"
             )
         ]
     ]
+
+    await message.reply_text("Sending transaction now...")
+
+    if selected_chain == "base_chain":
+        tx_hash = await _buy_confirm_evm(token_address, token_decimals, token_symbol, amount_in_native, wallet, message, keyboard)
+        origin_domain = "basescan.org"
+    
+    else:
+        tx_hash = await _buy_confirm_sol(token_address, wallet, user, message, amount_in_native)
+        origin_domain = "solscan.io"
+
+
+    if not tx_hash:
+        await message.reply_text("Router currently busy, please try again later.")
+        return ConversationHandler.END
+    
+
+    url = f"https://{origin_domain}/tx/0x{tx_hash}"
+    await message.edit_text(
+            f"Buy transaction sent successfully!\n"
+            f"Amount Bought: {amount_in_token:.6f} {token_symbol} ({amount_in_native:.4f} {'ETH' if selected_chain == 'base_chain' else 'SOL'})\n"
+            f"Transaction Hash: `{tx_hash}`\n"
+            f"[View it on {'Base' if selected_chain == 'base_chain' else 'Sol'}scan ↗]({url})",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+async def _buy_confirm_sol(token_address, wallet, user, message, amount_in_native):
+    payer_keypair = _get_keypair_from_user_id(user.id)
+    tx_hash = buy_on_sol_chain(radiyum, token_address, wallet['solana_address'], payer_keypair, amount_in_native)
+    await message.edit_text("Confirming transaction now..")
+
+    return tx_hash 
+
+async def _buy_confirm_evm(token_address, token_decimals, token_symbol, amount_in_native, wallet, message, keyboard):
+   
+    slippage = settings.default.base.gas_fee
+
+    evm_private_key = Wallet.decrypt_private_key(wallet["evm_private_key"])
+    sender_address = wallet["evm_address"]
+
 
     try:
         current_gas_price = w3.eth.gas_price
@@ -862,7 +995,7 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         pool_address, fee_tier = await web3utils.get_pair_address(token_address, w3)
 
-        amount_in_wei = Web3.to_wei(amount_in_eth, "ether")
+        amount_in_wei = Web3.to_wei(amount_in_native, "ether")
 
         quoter = w3.eth.contract(
             address=w3.to_checksum_address(
@@ -875,7 +1008,7 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         result = quoter.functions.quoteExactInputSingle(quote_params).call()
         amount_out = result[0]
-        min_tokens_out = int(amount_out * (1 - slippage / 100))
+        min_tokens_out = int(amount_out * (1 - slippage / 100)) 
 
         nonce = w3.eth.get_transaction_count(sender_address, "latest")
 
@@ -912,15 +1045,8 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-        await query.message.reply_text(
-            f"Buy transaction sent successfully!\n"
-            f"Amount In: {amount_in_eth} ETH\n"
-            f"Minimum Tokens Out: {(min_tokens_out / (10 ** token_decimals)):.6f} {token_symbol}\n"
-            f"Transaction Hash: `{tx_hash.hex()}`\n"
-            f"[View it on Basescan ↗](https://basescan.org/tx/0x{tx_hash.hex()})",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard_balance),
-        )
+        return tx_hash.hex()
+        
 
     except exceptions.Web3RPCError as e:
         if "replacement transaction underpriced" in str(e):
@@ -931,24 +1057,19 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     transaction, private_key=evm_private_key
                 )
                 tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-                await query.message.reply_text(
-                    f"Buy transaction sent successfully (with higher gas)!\n"
-                    f"Transaction Hash: `{tx_hash.hex()}`\n"
-                    f"[View it on Basescan ↗](https://basescan.org/tx/0x{tx_hash.hex()})",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(keyboard_balance),
-                )
+                return tx_hash
             except Exception as retry_e:
-                await query.message.reply_text(
+                await message.reply_text(
                     f"Failed to send transaction even with higher gas: {str(retry_e)}"
                 )
         else:
-            await query.message.reply_text(f"An error occurred: {str(e)}")
+            await message.reply_text(f"An error occurred: {str(e)}")
     except Exception as e:
         print(f"Error during buy transaction: {e}")
-        await query.message.reply_text(f"An error occurred: {str(e)}")
+        await message.reply_text(f"An error occurred: {str(e)}")
 
     return ConversationHandler.END
+
 
 async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -1023,6 +1144,7 @@ async def start_sell_conversation(update: Update, context: ContextTypes.DEFAULT_
         )
         return ConversationHandler.END
 
+
 async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1068,6 +1190,7 @@ async def sell_token_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     return SELL_AMOUNT_CHOICE
 
+
 async def handle_sell_amount_selection(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
@@ -1088,6 +1211,7 @@ async def handle_sell_amount_selection(
     context.user_data["sell_amount"] = sell_amount
 
     return await show_sell_confirmation(update, context)
+
 
 async def show_sell_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1124,6 +1248,7 @@ async def show_sell_confirmation(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     return SELL_CONFIRM
+
 
 async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1197,6 +1322,7 @@ async def sell_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SELL_AMOUNT
 
+
 async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1217,7 +1343,7 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["sell_token_address"]
         )
         amount_to_sell = context.user_data["sell_amount"]
-        slippage = settings.default.slippage
+        slippage = settings.default.base.slippage
         sender_address = wallet["evm_address"]
         evm_private_key = Wallet.decrypt_private_key(wallet["evm_private_key"])
 
@@ -1431,12 +1557,14 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if update.callback_query:
         message = update.callback_query.message
     await message.reply_text("Cancelled.")
     return ConversationHandler.END
+
 
 async def wallets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -1469,6 +1597,7 @@ async def wallets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Solana Wallet**: `{solana_address}` (Tap to copy)\n\n",
         parse_mode="Markdown",
     )
+
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()

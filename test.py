@@ -1,22 +1,22 @@
-from apexbtbot.database import Database
-from apexbtbot.wallet import Wallet
-from cryptography.fernet import Fernet
-from web3 import Web3
+import requests
+import base58
+import base64
+import json
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+from solders import message
 from solana.rpc.api import Client
-from dotenv import load_dotenv
-from spl.token.client import Token
-from spl.token.constants import TOKEN_PROGRAM_ID
-from solana.rpc.commitment import Confirmed
-from solana.rpc.types import TokenAccountOpts
+from solana.rpc.types import TxOpts
+from solana.rpc.commitment import Processed, Confirmed
+from apexbtbot.wallet import Wallet
+import time
 
+from apexbtbot.database import Database
 db = Database()
 db.init()
+user_data = db.get_user_by_telegram_id("7103256395")
+wallet = db.get_wallet_by_user_id(user_data["id"])
+decoded = base64.b64decode(Wallet.decrypt_private_key(wallet["solana_private_key"]))
+keypair = Wallet.get_keypair_from_private_key(decoded)
 
-user = db.get_user_by_telegram_id(5627329018)
-wallet = db.get_wallet_by_user_id(user["id"])
 
-solana_wallet_address = wallet["solana_address"]
-
-balance_string = Wallet.build_solana_balance_string(solana_wallet_address)

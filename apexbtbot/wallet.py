@@ -22,7 +22,7 @@ load_dotenv()
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 ETH_NODE_URL = os.getenv("ETH_NODE_URL")
 PRICES_NODE_URL = os.getenv("PRICES_NODE_URL")
-SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+SOLANA_RPC_URL = os.getenv("SOL_NODE_URL")
 
 cipher = Fernet(ENCRYPTION_KEY)
 
@@ -54,10 +54,10 @@ class Wallet:
     @staticmethod
     def create_solana_wallet():
         keypair = Keypair()
-        private_key = base64.b64encode(bytes(keypair)).decode() 
+        private_key = base58.b58encode(bytes(keypair.secret_key)).decode()
         encrypted_private_key = cipher.encrypt(private_key.encode()).decode()
         return {
-            "address": str(keypair.pubkey()),
+            "address": str(keypair.public_key),
             "encrypted_private_key": encrypted_private_key
         }
 
@@ -67,8 +67,8 @@ class Wallet:
         pubkey = Pubkey.from_string(public_key)
         response = client.get_balance(pubkey)
 
-        if response.value:
-            return response.value / 1e9 
+        if response['result']:
+            return response['result']['value'] / 1e9 
         else:
             return 0
 
@@ -245,46 +245,52 @@ class Wallet:
                 pubkey,
                 TokenAccountOpts(program_id=TOKEN_PROGRAM_ID, encoding="base64")
             )
-            
+
             token_balances = {}
-            for account in response.value:
-                try:
-                    account_data = account.account.data
-                    mint = str(base58.b58encode(account_data[:32]), 'utf-8')
-                    amount = int.from_bytes(account_data[64:72], 'little')
-                    decimals = account_data[44]  
-                    
-                    balance = amount / (10 ** decimals)
-                    
-                    if balance <= 0:
-                        continue
-                    
-                    metadata_url = f"https://api.jup.ag/price/v2?ids={mint}"
-                    try:
-                        metadata_response = requests.get(metadata_url, timeout=5).json()
-                        token_data = metadata_response.get('data', {}).get(mint, {})
-                        
-                        if token_data:
-                            price = float(token_data.get('price', 0))
-                            symbol = token_data.get('symbol', 'Unknown')
-                            name = token_data.get('name', 'Unknown Token')
-                            
-                            token_balances[mint] = {
-                                'balance': balance,
-                                'symbol': symbol,
-                                'name': name,
-                                'price_in_usd': price,
-                                'value_in_usd': price * balance
-                            }
-                    except requests.exceptions.RequestException:
-                        print(f"Failed to fetch metadata for token {mint}")
-                        continue
-                    
-                except Exception as e:
-                    print(f"Error processing token account: {e}")
+
+            for account in response['result']['value']:
+                account_data = account['account']['data']
+                raw_data = base64.b64decode(account_data[0])
+                mint = str(base58.b58encode(raw_data[:32]), 'utf-8')
+                amount = int.from_bytes(raw_data[64:72], 'little')
+                token_balances[mint] = amount 
+
+            
+            mint_data_url = f"https://api-v3.raydium.io/mint/ids?mints={','.join(token_balances.keys())}"
+            price_data_url = f"https://api-v3.raydium.io/mint/price?mints={','.join(token_balances.keys())}"
+            
+            mint_data_response = requests.get(mint_data_url, timeout=5).json()
+            price_data_response = requests.get(price_data_url, timeout=5).json()
+
+        
+            if mint_data_response['success'] == True:
+                mint_data = mint_data_response['data']
+            
+            if price_data_response['success'] == True:
+                price_data = price_data_response['data']
+
+            built_token_balances = {}
+            for data in mint_data:
+                address = data['address']
+                symbol = data['symbol']
+                name = data['name']
+                decimals = data['decimals']
+                price = float(price_data[address])
+                balance = token_balances[address] / (10 ** decimals)
+
+                if balance <= 0:
                     continue
                     
-            return token_balances
+                built_token_balances[address] = {
+                    'balance': balance,
+                    'symbol': symbol,
+                    'name': name,
+                    'price_in_usd': price,
+                    'value_in_usd': price * balance
+                }
+                    
+            return built_token_balances
+            
             
         except Exception as e:
             print(f"Error fetching Solana token balances: {e}")
@@ -294,7 +300,9 @@ class Wallet:
     def build_solana_balance_string(public_key, no_title=False):
         token_balances = Wallet.get_solana_token_balances(public_key)
         sol_balance = Wallet.get_solana_balance(public_key)
-        
+
+        print(token_balances)
+        print(sol_balance)
         try:
             sol_price_response = requests.get(
                 "https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112",
@@ -328,5 +336,10 @@ class Wallet:
             balance_message += "<b>Your Positions:</b>\n"
             
         balance_message += balance_compiled_message
+
+        print(balance_message)
         return balance_message    
     
+    @staticmethod
+    def get_keypair_from_private_key(private_key):
+        return Keypair.from_bytes(private_key)

@@ -1,104 +1,172 @@
 import base64
-import requests 
-import time
+import asyncio 
+import os
+import httpx
+import subprocess 
+from dataclasses import dataclass
+
 from solana.rpc.types import TxOpts
 from solders import message
-
 from solders.transaction import VersionedTransaction  # type: ignore
-from solana.rpc.commitment import Processed
+from solana.rpc.commitment import Confirmed
 from apexbtbot.constants import WSOL_RAW
+from solders.keypair import Keypair # type: ignore
+from pprint import pprint 
+from dotenv import load_dotenv
 
-def _buy(client, token_address, wallet_address, keypair, amount_in_native):
-    MAX_API_RETRIES = 3
-    MAX_TX_RETRIES = 3
+from apexbtbot.solana.util import parse_base58_tx
+
+load_dotenv()
+
+SOL_NODE_URL = os.getenv("SOL_NODE_URL")
+
+@dataclass
+class BuyTokenParams:
+    private_key: str
+    token_mint: str         
+    sol_amount: float  
+    slippage: int = 200
+    rpc: str = SOL_NODE_URL
+
+@dataclass
+class SellTokenParams:
+    private_key: str
+    token_mint: str         
+    token_amount: float  
+    token_decimals: int   
+    slippage: int = 200
+    rpc: str = SOL_NODE_URL
+
+async def __buy(client, token_address, keypair: Keypair, amount_in_native):
+    quote_response = await __quote(input_mint=WSOL_RAW, output_mint=token_address, amount=amount_in_native)
+    swap_response = await __swap(quote_response, keypair)
+    swap_route = swap_response['swapTransaction']
+
+    print(f"Swap route recieved from Jupiter API: {swap_route}")
+
+    raw_transaction = VersionedTransaction.from_bytes(base64.b64decode(swap_route))
+
+    pprint(raw_transaction)
+    signature = keypair.sign_message(message.to_bytes_versioned(raw_transaction.message))
+
+    print(f"Signature: {signature}")
+    signed_txn = VersionedTransaction.populate(raw_transaction.message, [signature])
+
+    opts = TxOpts(
+        skip_preflight=True,
+        preflight_commitment=Confirmed,
+    )
     
-    for tx_attempt in range(MAX_TX_RETRIES):
-        try:
-            # Calculate amount with decimals
-            amount_in_native_without_decimals = int(amount_in_native * 1e9)
+    result = client.send_raw_transaction(txn=bytes(signed_txn), opts=opts)
+    transaction_id = result['result']
+
+    confirm_result = client.get_signature_statuses([transaction_id])
+    status = confirm_result['result']['value'][0]
             
-            # Get quote with retry
-            quote_response = None
-            for api_attempt in range(MAX_API_RETRIES):
-                try:
-                    quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={WSOL_RAW}&outputMint={token_address}&amount={amount_in_native_without_decimals}"
-                    quote_response = requests.get(url=quote_url, timeout=10).json()
-                    break
-                except Exception as e:
-                    if api_attempt == MAX_API_RETRIES - 1:
-                        raise Exception(f"Failed to get quote after {MAX_API_RETRIES} attempts: {str(e)}")
-                    time.sleep(1)
+    if status is not None:
+        if status.get('err') is not None:
+            print(f"Transaction failed with error: {status['err']}")
+    
+    print(f"Transaction confirmed! https://solscan.io/tx/{transaction_id}")
+    return transaction_id
+    
+async def __quote(input_mint: str, output_mint: str, amount: float, decimals: int = 9):
+    url = f"https://quote-api.jup.ag/v6/quote"
+    params = {
+        "inputMint": input_mint,
+        "outputMint": output_mint,
+        "amount": int(amount * 10**decimals),
+    }
+    
+    response = await httpx.AsyncClient().get(url, params=params)
+    return response.json()
 
-            # Get swap transaction with retry
-            payload = {
-                "quoteResponse": quote_response,
-                "userPublicKey": wallet_address,
-                "wrapUnwrapSOL": True,
-                "computeUnitPriceMicroLamports": 1000,  # Add priority fee
-                "dynamicComputeUnitLimit": True
-            }
+async def __swap(quote_response, keypair):
+    url = f"https://quote-api.jup.ag/v6/swap"
+
+    payload = {
+        "quoteResponse": quote_response,
+        "userPublicKey": keypair.pubkey().__str__(),
+        "wrapUnwrapSOL": True,
+        "dynamicComputeUnitLimit": True,
+        "prioritizationFeeLamports": 'auto',
+    }
+    swap_response = await httpx.AsyncClient().post(url, json=payload)
+
+    return swap_response.json()
+
+async def _execute_swap(
+    input_mint: str,
+    output_mint: str,
+    amount: int,
+    private_key: str,
+    slippage: int,
+    rpc: str
+):
+    
+    print(input_mint)
+    print(output_mint)
+    print(amount)
+    print(private_key)
+    print(slippage)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            'node', 'js/swap.js',
+            '--private-key', private_key,
+            '--input-mint', input_mint,
+            '--output-mint', output_mint,
+            '--amount', str(amount),
+            '--slippage', str(slippage),
+            '--rpc', rpc,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            print(f"Error: {stderr.decode()}")
+            return None
             
-            for api_attempt in range(MAX_API_RETRIES):
-                try:
-                    swap_response = requests.post(
-                        url="https://quote-api.jup.ag/v6/swap", 
-                        json=payload,
-                        timeout=10
-                    ).json()
-                    swap_route = swap_response['swapTransaction']
-                    break
-                except Exception as e:
-                    if api_attempt == MAX_API_RETRIES - 1:
-                        raise Exception(f"Failed to get swap route after {MAX_API_RETRIES} attempts: {str(e)}")
-                    time.sleep(1)
+        output = stdout.decode()
+        print(output)
+        
+        for line in output.split('\n'):
+            if line.startswith('Txid:'):
+                txid = line.split('Txid: ')[1].strip()
+                print("Recieved txid: ", txid)
 
-            # Build and sign transaction
-            raw_transaction = VersionedTransaction.from_bytes(base64.b64decode(swap_route))
-            signature = keypair.sign_message(message.to_bytes_versioned(raw_transaction.message))
-            signed_txn = VersionedTransaction.populate(raw_transaction.message, [signature])
+                return parse_base58_tx(txid)
+        
+        return None
+        
+    except Exception as e:
+        print(f"Failed to execute swap: {e}")
+        return None
 
-            # Send transaction with corrected options
-            opts = TxOpts(
-                skip_preflight=False,
-                preflight_commitment=Processed
-            )
-            
-            result = client.send_raw_transaction(txn=bytes(signed_txn), opts=opts)
-            transaction_id = result['result']
-            print(f"Transaction sent: {transaction_id}")
+async def _buy(params: BuyTokenParams):
+    amount = int(params.sol_amount * 1e9)
+    print(f"Buying with {params.sol_amount} = {amount}")
+    txid =  await _execute_swap(
+        input_mint=WSOL_RAW,
+        output_mint=params.token_mint,
+        amount=amount,
+        private_key=params.private_key,
+        slippage=params.slippage,
+        rpc=params.rpc
+    )
+    print(f"Recieved txid 2: {txid}")
+    return txid
 
-            # Wait for confirmation
-            max_retries = 60
-            retry_count = 0
-            
-            while retry_count < max_retries:
-                try:
-                    confirm_result = client.get_signature_statuses([transaction_id])
-                    status = confirm_result['result']['value'][0]
-                    
-                    if status is not None:
-                        if status.get('err') is not None:
-                            print(f"Transaction failed with error: {status['err']}")
-                            break
-                        return transaction_id
-                    
-                    time.sleep(0.5)
-                    retry_count += 1
-                    
-                except Exception as e:
-                    print(f"Error checking status: {str(e)}")
-                    time.sleep(0.5)
-                    retry_count += 1
+async def _sell(params: SellTokenParams):
+    amount = int(params.token_amount * (10 ** params.token_decimals))
+    print(f"Selling: {amount}")
+    return await _execute_swap(
+        input_mint=params.token_mint,
+        output_mint=WSOL_RAW,
+        amount=amount,
+        private_key=params.private_key,
+        slippage=params.slippage,
+        rpc=params.rpc
+    )
 
-            if retry_count >= max_retries:
-                print("Transaction timed out waiting for confirmation")
-                continue
-
-        except Exception as e:
-            print(f"Attempt {tx_attempt + 1} failed: {str(e)}")
-            if tx_attempt < MAX_TX_RETRIES - 1:
-                time.sleep(2)
-                continue
-            raise e
-
-    raise Exception(f"Failed to complete transaction after {MAX_TX_RETRIES} attempts")

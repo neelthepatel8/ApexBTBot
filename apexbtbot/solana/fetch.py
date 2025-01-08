@@ -171,10 +171,6 @@ def get_amm_v4_reserves(client, pool_keys: AmmV4PoolKeys) -> tuple:
             quote_reserve = quote_account_balance
             token_decimal = base_decimal
 
-        print(f"Base Mint: {base_mint} | Quote Mint: {quote_mint}")
-        print(
-            f"Base Reserve: {base_reserve} | Quote Reserve: {quote_reserve} | Token Decimal: {token_decimal}"
-        )
         return base_reserve, quote_reserve, token_decimal
 
     except Exception as e:
@@ -258,8 +254,6 @@ class JupiterAggregator:
                     }
                     
                     async with session.get(url, params=params) as response:
-                        from pprint import pprint
-                        pprint(await response.json())
                         if response.status == 200:
                             data = await response.json()
                             if 'routePlan' in data:

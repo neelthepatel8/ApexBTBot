@@ -2,6 +2,7 @@ import time
 import json
 from enum import Enum
 import requests 
+from urllib.parse import quote
 
 from solana.rpc.types import TokenAccountOpts
 from solana.rpc.commitment import Processed, Confirmed
@@ -128,3 +129,6 @@ def get_token_info(token_address):
 class DIRECTION(Enum):
     BUY = 0
     SELL = 1
+
+def parse_base58_tx(txid):
+    return quote(txid) 

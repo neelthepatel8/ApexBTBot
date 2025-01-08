@@ -297,12 +297,10 @@ class Wallet:
             return {}
 
     @staticmethod
-    def build_solana_balance_string(public_key, no_title=False):
+    def build_solana_balance_string(public_key, no_title=False, no_sol=False):
         token_balances = Wallet.get_solana_token_balances(public_key)
         sol_balance = Wallet.get_solana_balance(public_key)
 
-        print(token_balances)
-        print(sol_balance)
         try:
             sol_price_response = requests.get(
                 "https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112",
@@ -322,6 +320,9 @@ class Wallet:
             balance = data["balance"]
             symbol = data["symbol"]
             value_in_usd = data["value_in_usd"]
+
+            if no_sol and symbol in ["WSOL", "SOL"]:
+                continue
             
             total_usd_value += value_in_usd
             
@@ -337,7 +338,6 @@ class Wallet:
             
         balance_message += balance_compiled_message
 
-        print(balance_message)
         return balance_message    
     
     @staticmethod

@@ -157,7 +157,8 @@ def register_chain_handlers(application):
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60, 
-        allow_reentry=True
+        allow_reentry=True,
+        per_user=True
     )
 
     buy_chain_handler = ConversationHandler(
@@ -189,7 +190,8 @@ def register_chain_handlers(application):
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60, 
-        allow_reentry=True
+        allow_reentry=True,
+        per_user=True
     )
 
     sell_chain_handler = ConversationHandler(
@@ -230,7 +232,8 @@ def register_chain_handlers(application):
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=60, 
-        allow_reentry=True
+        allow_reentry=True,
+        per_user=True
     )
 
     application.add_handler(balance_chain_handler)
@@ -512,11 +515,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = db.get_user_by_telegram_id(user.id)
     reply_markup = InlineKeyboardMarkup(main_keyboard)
 
+
     if not user_data:
         db.add_user(user.id, user.full_name)
         user_data = db.get_user_by_telegram_id(user.id)
+        await update.message.reply_text("New user detected, creating wallets and account...")
 
     wallet = db.get_wallet_by_user_id(user_data["id"])
+
+    await update.message.reply_text("Please wait while I gather your information...")
 
     if wallet:
         try:
@@ -549,14 +556,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             evm_wallet, solana_wallet = await create_wallet_for_user(user_data["id"])
 
-            db.add_wallet(
-                user_data["id"],
-                evm_wallet["address"],
-                evm_wallet["private_key"],
-                solana_wallet["address"],
-                solana_wallet["private_key"],
-            )
-
             await update.message.reply_text(
                 f"<b>Welcome to ApexBT Bot, {user.full_name}!</b>\n\n"
                 f"<u>Your New Wallets Have Been Created:</u>\n"
@@ -571,7 +570,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await update.message.reply_text(
-                "I cannot send you private messages, please initiate a conversation with me.",
+                f"I cannot send you private messages, please initiate a conversation with me. {e}",
                 parse_mode="HTML",
             )
 
@@ -1523,7 +1522,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "sell_amount",
         "selected_chain",
         "token_data",
-        "command_type"
+        "command_type",
+        "buy_token_address",
+        "buy_token_symbol",
+        "buy_amount",
     ]
     
     for key in keys_to_remove:

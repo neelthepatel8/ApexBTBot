@@ -54,10 +54,10 @@ class Wallet:
     @staticmethod
     def create_solana_wallet():
         keypair = Keypair()
-        private_key = base58.b58encode(bytes(keypair.secret_key)).decode()
+        private_key = base64.b64encode(bytes(keypair.secret())).decode()
         encrypted_private_key = cipher.encrypt(private_key.encode()).decode()
         return {
-            "address": str(keypair.public_key),
+            "address": str(keypair.pubkey()),
             "encrypted_private_key": encrypted_private_key
         }
 

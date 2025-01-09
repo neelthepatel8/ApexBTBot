@@ -173,4 +173,5 @@ cython_debug/
 .env*
 .flaskenv*
 !.env.project
-!.env.vault
+!.env.vaultnode_modules
+/js/node_modules

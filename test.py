@@ -1,22 +1,47 @@
-from apexbtbot.database import Database
-from apexbtbot.wallet import Wallet
-from cryptography.fernet import Fernet
-from web3 import Web3
+import asyncio
+import base64
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+from solders import message
 from solana.rpc.api import Client
-from dotenv import load_dotenv
-from spl.token.client import Token
-from spl.token.constants import TOKEN_PROGRAM_ID
-from solana.rpc.commitment import Confirmed
-from solana.rpc.types import TokenAccountOpts
+from solana.rpc.types import TxOpts
+from solana.rpc.commitment import Processed, Confirmed
+from apexbtbot.wallet import Wallet
+from apexbtbot.database import Database
+from apexbtbot.solana.functions import _buy, _sell, BuyTokenParams, SellTokenParams
 
 db = Database()
 db.init()
+user_data = db.get_user_by_telegram_id("7103256395")
+wallet = db.get_wallet_by_user_id(user_data["id"])
+private_key = Wallet.decrypt_private_key(wallet["solana_private_key"])
+decoded = base64.b64decode(private_key)
+keypair = Wallet.get_keypair_from_private_key(decoded)
+client = Client("https://mainnet.helius-rpc.com/?api-key=d8965fa9-a70f-4b56-a16f-ee72dc18bd4f")
 
-user = db.get_user_by_telegram_id(5627329018)
-wallet = db.get_wallet_by_user_id(user["id"])
+token_address = "74SBV4zDXxTRgv1pEMoECskKBkZHc2yGPnc7GYVepump"
 
-solana_wallet_address = wallet["solana_address"]
+async def main():
+    buy_params = BuyTokenParams(
+        private_key=private_key,
+        token_mint=token_address,  
+        sol_amount=0.02
+    )
+    txid = await _buy(buy_params)
 
-balance_string = Wallet.build_solana_balance_string(solana_wallet_address)
+    print(f"Tx Successful! check on: https://www.solscan.io/tx/{txid}")
+
+    
+    sell_params = SellTokenParams(
+        private_key=private_key,
+        token_mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 
+        token_amount=3,
+        token_decimals=6
+    )
+
+    txid = await _sell(sell_params)
+    print(f"Tx Successful! check on: https://www.solscan.io/tx/{txid}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -115,7 +115,7 @@ async def get_pair_address(token_address: str, w3) -> str:
     try:
         weth_address = "0x4200000000000000000000000000000000000006"
         factory_contract = w3.eth.contract(
-            address=w3.to_checksum_address("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),  # Base Uniswap V3 Factory
+            address=w3.to_checksum_address("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),
             abi=[{
                 "inputs": [
                     {"internalType": "address", "name": "tokenA", "type": "address"},

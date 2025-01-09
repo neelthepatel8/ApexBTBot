@@ -32,7 +32,8 @@ const argv = yargs(hideBin(process.argv))
     .argv;
 
 const connection = new Connection(argv.rpc, 'confirmed');
-
+console.log("private key is:::::::")
+console.log(argv["private_key"])
 const wallet = new Wallet(
     Keypair.fromSecretKey(
         Buffer.from(argv['private-key'], "base64")

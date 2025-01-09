@@ -115,13 +115,13 @@ def _get_dynamic_url(selected_chain: str, token_address=None, tx_hash=None):
         domain = "Basescan"
     else:
         url = f"https://explorer.solana.com"
-        domain = "Solscan"
+        domain = "Solana Explorer"
    
     if token_address:
         url += f"/token/{token_address}"
 
     elif tx_hash:
-        url += f"/tx/{tx_hash}" if selected_chain == "base_chain" else f"/tx/0x{tx_hash}"
+        url += f"/tx/0x{tx_hash}" if selected_chain == "base_chain" else f"/tx/{tx_hash}"
 
     return url, domain
 
@@ -971,7 +971,7 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     url = f"https://{origin_domain}/tx/0x{tx_hash}"
-    await message.reply(
+    await message.reply_text(
         f"Buy transaction sent successfully!\n"
         f"Amount Bought: {amount_in_token:.6f} {token_symbol} ({amount_in_native:.4f} {'ETH' if selected_chain == 'base_chain' else 'SOL'})\n"
         f"Transaction Hash: `{tx_hash}`\n"
@@ -981,6 +981,9 @@ async def buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def _buy_confirm_sol(token_address, wallet, message, amount_in_native):
+    print(wallet['solana_private_key'])
+    print(Wallet.decrypt_private_key(wallet["solana_private_key"]))
+    print(Wallet.decrypt_private_key("gAAAAABneZ3Hr7hSrzfcIS0cm1GNu_nw27THB28-QuMPGp4R_Y6oUBMZeggm53QpCiugqM9xEktLHNm1Qa383Rhi--_o-BhSEbO-dTnlV4apSbJ4KsAdGxGMIKmdby1BD8v_J3aLDqB97OzPhBkqSESBB74kAm_Cj-6tunO5_1Lr2mLOXqkHul_CQ5SE6ofw7ntRaV0zcF89"))
     buy_params = BuyTokenParams(
         private_key=Wallet.decrypt_private_key(wallet["solana_private_key"]),
         token_mint=token_address,  
@@ -1393,6 +1396,7 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tx_hash = await _sell_confirm_sol(token_address, amount_to_sell, wallet)
     
     
+   
     keyboard_balance = [
             [InlineKeyboardButton(text="Check Balance", callback_data="check_balance")]
         ]
@@ -1404,6 +1408,19 @@ async def sell_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*Transaction Hash:* `{tx_hash}`\n\n"
             f"[View on {domain} ↗]({url})"
         )
+    
+    if not tx_hash:
+        success_message = (
+            "Transaction failed, this could be due to network congestion on the solana chain. Please try to send the transaction again."
+        )
+
+        await status_message.edit_text(
+            success_message,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard_balance),
+        )
+        return ConversationHandler.END
+            
     
     
     await status_message.edit_text(

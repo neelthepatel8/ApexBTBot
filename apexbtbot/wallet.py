@@ -50,11 +50,11 @@ class Wallet:
         except Exception as e:
             print(f"Error fetching EVM wallet balance: {e}")
             return 0.0
-        
-    @staticmethod
+
+    @staticmethod 
     def create_solana_wallet():
         keypair = Keypair()
-        private_key = base64.b64encode(bytes(keypair.secret())).decode()
+        private_key = base64.b64encode(bytes(keypair)).decode() 
         encrypted_private_key = cipher.encrypt(private_key.encode()).decode()
         return {
             "address": str(keypair.pubkey()),
